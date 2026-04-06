@@ -6,8 +6,9 @@ import type {
   SmsInboxSnapshot,
   SmsPublicNumber,
 } from "../../domain/models.js";
-import { decodeNumberId } from "../../shared/index.js";
 import {
+  decodeNumberId,
+  dedupeAndLimit,
   encodeNumberId,
   fetchHtmlDocument,
   inferCountryCode,
@@ -53,7 +54,6 @@ export class FreePhoneNumProvider implements SmsProvider {
     for (const page of listPages) {
       if (
         !matchesCountryFilter(page.countryCode, page.countryName, options.countryCode, options.countryName)
-        && options.countryCode
       ) {
         continue;
       }
@@ -70,12 +70,6 @@ export class FreePhoneNumProvider implements SmsProvider {
         const sourceUrl = resolveAbsoluteUrl(page.url, href);
         const phoneNumber = normalizeText($(element).find("div").first().text()) || normalizeText(label);
         const latestActivityText = normalizeText($(element).find(".sms-count").text()) || undefined;
-
-        if (
-          !matchesCountryFilter(page.countryCode, page.countryName, options.countryCode, options.countryName)
-        ) {
-          return;
-        }
 
         results.push({
           providerKey: this.descriptor.key,
@@ -135,20 +129,4 @@ export class FreePhoneNumProvider implements SmsProvider {
       messages,
     };
   }
-}
-
-function dedupeAndLimit(items: SmsPublicNumber[], limit: number): SmsPublicNumber[] {
-  const seen = new Set<string>();
-  const deduped: SmsPublicNumber[] = [];
-
-  for (const item of items) {
-    if (seen.has(item.sourceUrl)) {
-      continue;
-    }
-
-    seen.add(item.sourceUrl);
-    deduped.push(item);
-  }
-
-  return deduped.slice(0, limit);
 }

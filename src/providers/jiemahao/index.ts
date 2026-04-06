@@ -9,12 +9,14 @@ import type {
 } from "../../domain/models.js";
 import {
   decodeNumberId,
+  dedupeAndLimit,
   encodeNumberId,
   fetchHtmlDocument,
   inferCountryCode,
   matchesCountryFilter,
   normalizeText,
   resolveAbsoluteUrl,
+  takeRoundRobin,
 } from "../../shared/index.js";
 import type { SmsProvider } from "../contracts.js";
 
@@ -108,7 +110,7 @@ export class JiemahaoProvider implements SmsProvider {
 
     const items = options.countryCode || options.countryName
       ? countryGroups.flat()
-      : takeRoundRobinAcrossCountries(countryGroups, limit);
+      : takeRoundRobin(countryGroups, limit);
 
     return dedupeAndLimit(items, limit);
   }
@@ -241,52 +243,3 @@ function normalizeChineseCountryName(value: string): string {
   return value.replace(/(电话号码|号码)/g, "").trim();
 }
 
-function dedupeAndLimit(items: SmsPublicNumber[], limit: number): SmsPublicNumber[] {
-  const seen = new Set<string>();
-  const deduped: SmsPublicNumber[] = [];
-
-  for (const item of items) {
-    if (seen.has(item.sourceUrl)) {
-      continue;
-    }
-
-    seen.add(item.sourceUrl);
-    deduped.push(item);
-  }
-
-  return deduped.slice(0, limit);
-}
-
-function takeRoundRobinAcrossCountries(
-  countryGroups: SmsPublicNumber[][],
-  limit: number,
-): SmsPublicNumber[] {
-  const groups = countryGroups
-    .map((group) => [...group])
-    .filter((group) => group.length > 0);
-  const output: SmsPublicNumber[] = [];
-
-  while (output.length < limit) {
-    let consumedAny = false;
-
-    for (const group of groups) {
-      const item = group.shift();
-      if (!item) {
-        continue;
-      }
-
-      output.push(item);
-      consumedAny = true;
-
-      if (output.length >= limit) {
-        return output;
-      }
-    }
-
-    if (!consumedAny) {
-      break;
-    }
-  }
-
-  return output;
-}

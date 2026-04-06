@@ -19,7 +19,9 @@ export function startEasySmsMaintenanceLoop(
   options: EasySmsMaintenanceLoopOptions,
 ): EasySmsMaintenanceLoop {
   if (options.activeProbeEnabled) {
-    void service.probeAllProviders().catch(() => undefined);
+    void service.probeAllProviders().catch((error) =>
+      console.error("[EasySMS] maintenance: initial probe failed:", error),
+    );
   }
 
   const maintenanceHandle = setInterval(() => {
@@ -28,7 +30,9 @@ export function startEasySmsMaintenanceLoop(
 
   const activeProbeHandle = options.activeProbeEnabled
     ? setInterval(() => {
-        void service.probeAllProviders().catch(() => undefined);
+        void service.probeAllProviders().catch((error) =>
+          console.error("[EasySMS] maintenance: periodic probe failed:", error),
+        );
       }, options.activeProbeIntervalMs)
     : undefined;
 

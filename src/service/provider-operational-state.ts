@@ -5,7 +5,6 @@ import type {
   SmsProviderHealthState,
   SmsProviderHealthProbeResult,
   SmsProviderHealthSummary,
-  SmsProviderKey,
   SmsProviderOperationalStatus,
   SmsProviderProbeHistoryEntry,
   SmsProviderProbeTrendSnapshot,
@@ -17,7 +16,7 @@ import type {
 import { normalizeText } from "../shared/index.js";
 
 export interface SmsProviderRouteContext {
-  providerKey: SmsProviderKey;
+  providerKey: string;
   providerDisplayName: string;
   routeKind: SmsProviderRouteKind;
   scopeKind: SmsProviderRouteScopeKind;
@@ -41,7 +40,7 @@ export interface SmsProviderRouteReportResult {
 }
 
 export interface SmsProviderAvailabilityIssue {
-  providerKey: SmsProviderKey;
+  providerKey: string;
   reason: string;
   status: SmsProviderOperationalStatus;
   routeKey?: string;
@@ -260,11 +259,12 @@ export function classifySmsProviderRouteFailure(error: unknown): SmsProviderRout
 }
 
 export class EasySmsProviderOperationalState {
-  private readonly descriptorByKey = new Map<SmsProviderKey, ProviderDescriptor>();
-  private readonly providerStates = new Map<SmsProviderKey, SmsProviderHealthSnapshot>();
+  private readonly descriptorByKey = new Map<string, ProviderDescriptor>();
+  private readonly providerStates = new Map<string, SmsProviderHealthSnapshot>();
   private readonly routeStates = new Map<string, SmsProviderRouteHealthSnapshot>();
-  private readonly probeHistoryByProvider = new Map<SmsProviderKey, SmsProviderProbeHistoryEntry[]>();
+  private readonly probeHistoryByProvider = new Map<string, SmsProviderProbeHistoryEntry[]>();
   private readonly options: EasySmsProviderOperationalStateOptions;
+  private lastRefreshedAtMs = 0;
 
   public constructor(
     descriptors: ProviderDescriptor[],
@@ -335,7 +335,7 @@ export class EasySmsProviderOperationalState {
       .sort(sortProviderSnapshots);
   }
 
-  public listRouteHealth(providerKey?: SmsProviderKey, now: Date = new Date()): SmsProviderRouteHealthSnapshot[] {
+  public listRouteHealth(providerKey?: string, now: Date = new Date()): SmsProviderRouteHealthSnapshot[] {
     this.refresh(now);
     return Array.from(this.routeStates.values())
       .filter((route) => (providerKey ? route.providerKey === providerKey : true))
@@ -357,7 +357,7 @@ export class EasySmsProviderOperationalState {
     };
   }
 
-  public listProbeHistory(providerKey?: SmsProviderKey, now: Date = new Date()): SmsProviderProbeHistoryEntry[] {
+  public listProbeHistory(providerKey?: string, now: Date = new Date()): SmsProviderProbeHistoryEntry[] {
     this.refresh(now);
     const output: SmsProviderProbeHistoryEntry[] = [];
 
@@ -372,7 +372,7 @@ export class EasySmsProviderOperationalState {
     return output.sort((left, right) => right.checkedAt.localeCompare(left.checkedAt));
   }
 
-  public listProbeTrends(providerKey?: SmsProviderKey, now: Date = new Date()): SmsProviderProbeTrendSnapshot[] {
+  public listProbeTrends(providerKey?: string, now: Date = new Date()): SmsProviderProbeTrendSnapshot[] {
     this.refresh(now);
     const keys = providerKey ? [providerKey] : Array.from(this.providerStates.keys());
 
@@ -540,7 +540,7 @@ export class EasySmsProviderOperationalState {
   }
 
   public markTemporaryDisabled(
-    providerKey: SmsProviderKey,
+    providerKey: string,
     input: {
       reason: string;
       until: Date;
@@ -561,7 +561,7 @@ export class EasySmsProviderOperationalState {
     return { ...next };
   }
 
-  public clearTemporaryDisabled(providerKey: SmsProviderKey, now: Date = new Date()): SmsProviderHealthSnapshot {
+  public clearTemporaryDisabled(providerKey: string, now: Date = new Date()): SmsProviderHealthSnapshot {
     const current = this.ensureProviderState(providerKey);
     const unlocked = clearProviderRuntimeLocks({
       ...current,
@@ -576,7 +576,7 @@ export class EasySmsProviderOperationalState {
   }
 
   public resetProvider(
-    providerKey?: SmsProviderKey,
+    providerKey?: string,
     now: Date = new Date(),
   ): {
     providers: SmsProviderHealthSnapshot[];
@@ -734,6 +734,12 @@ export class EasySmsProviderOperationalState {
     providers: SmsProviderHealthSnapshot[];
     routes: SmsProviderRouteHealthSnapshot[];
   } {
+    const nowMs = now.getTime();
+    if (nowMs - this.lastRefreshedAtMs < 1000) {
+      return { providers: [], routes: [] };
+    }
+    this.lastRefreshedAtMs = nowMs;
+
     const changedProviders: SmsProviderHealthSnapshot[] = [];
     const changedRoutes: SmsProviderRouteHealthSnapshot[] = [];
 
@@ -796,7 +802,7 @@ export class EasySmsProviderOperationalState {
     };
   }
 
-  private ensureProviderState(providerKey: SmsProviderKey): SmsProviderHealthSnapshot {
+  private ensureProviderState(providerKey: string): SmsProviderHealthSnapshot {
     const existing = this.providerStates.get(providerKey);
     if (existing) {
       return existing;
@@ -812,7 +818,7 @@ export class EasySmsProviderOperationalState {
     return created;
   }
 
-  private countActiveRouteCooling(providerKey: SmsProviderKey, now: Date): number {
+  private countActiveRouteCooling(providerKey: string, now: Date): number {
     let count = 0;
 
     for (const route of this.routeStates.values()) {
@@ -830,7 +836,7 @@ export class EasySmsProviderOperationalState {
   }
 
   private deriveProviderStatus(
-    providerKey: SmsProviderKey,
+    providerKey: string,
     provider: SmsProviderHealthSnapshot,
     now: Date,
   ): SmsProviderOperationalStatus {
@@ -859,7 +865,7 @@ export class EasySmsProviderOperationalState {
   }
 
   private buildProbeTrendSnapshot(
-    providerKey: SmsProviderKey,
+    providerKey: string,
     now: Date,
   ): SmsProviderProbeTrendSnapshot | undefined {
     const descriptor = this.descriptorByKey.get(providerKey);

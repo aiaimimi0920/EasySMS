@@ -13,6 +13,7 @@ import {
   fetchJsonValue,
   matchesCountryFilter,
   normalizeText,
+  takeRoundRobin,
 } from "../../shared/index.js";
 import type { SmsProvider } from "../contracts.js";
 import {
@@ -114,7 +115,12 @@ export class QuackrProvider implements SmsProvider {
       return items.slice(0, limit).map((item) => item.item);
     }
 
-    return takeRoundRobinByLocale(items, limit).map((item) => item.item);
+    const localeOrder = Array.from(new Set(items.map((item) => item.locale)));
+    const grouped = localeOrder.map((locale) =>
+      items.filter((item) => item.locale === locale)
+        .sort((left, right) => (right.addedAtMs ?? 0) - (left.addedAtMs ?? 0)),
+    );
+    return takeRoundRobin(grouped, limit).map((item) => item.item);
   }
 
   async getInbox(numberId: string): Promise<SmsInboxSnapshot> {
@@ -319,39 +325,3 @@ export function extractQuackrBrowserGateMessage(
   return undefined;
 }
 
-function takeRoundRobinByLocale(items: QuackrPreparedNumber[], limit: number): QuackrPreparedNumber[] {
-  const localeOrder = Array.from(new Set(items.map((item) => item.locale)));
-  const groups = new Map<string, QuackrPreparedNumber[]>();
-
-  for (const locale of localeOrder) {
-    groups.set(
-      locale,
-      items.filter((item) => item.locale === locale).sort((left, right) => (right.addedAtMs ?? 0) - (left.addedAtMs ?? 0)),
-    );
-  }
-
-  const output: QuackrPreparedNumber[] = [];
-  while (output.length < limit) {
-    let consumedAny = false;
-
-    for (const locale of localeOrder) {
-      const group = groups.get(locale);
-      if (!group || group.length === 0) {
-        continue;
-      }
-
-      output.push(group.shift() as QuackrPreparedNumber);
-      consumedAny = true;
-
-      if (output.length >= limit) {
-        return output;
-      }
-    }
-
-    if (!consumedAny) {
-      break;
-    }
-  }
-
-  return output;
-}

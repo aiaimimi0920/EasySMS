@@ -22,7 +22,9 @@ export function startEasySmsStatePersistenceLoop(
   };
 
   const intervalHandle = setInterval(() => {
-    void flushOnce().catch(() => undefined);
+    void flushOnce().catch((error) =>
+      console.error("[EasySMS] persistence: periodic flush failed:", error),
+    );
   }, options.intervalMs);
 
   return {

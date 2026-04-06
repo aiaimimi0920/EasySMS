@@ -88,7 +88,7 @@ export type SmsProviderRouteKind = "list-public-numbers" | "read-public-inbox";
 export type SmsProviderRouteScopeKind = "provider" | "country";
 
 export interface SmsProviderHealthSnapshot {
-  providerKey: SmsProviderKey;
+  providerKey: string;
   providerDisplayName: string;
   status: SmsProviderOperationalStatus;
   healthState: SmsProviderHealthState;
@@ -110,7 +110,7 @@ export interface SmsProviderHealthSnapshot {
 
 export interface SmsProviderRouteHealthSnapshot {
   routeKey: string;
-  providerKey: SmsProviderKey;
+  providerKey: string;
   routeKind: SmsProviderRouteKind;
   scopeKind: SmsProviderRouteScopeKind;
   scopeValue: string;
@@ -124,7 +124,7 @@ export interface SmsProviderRouteHealthSnapshot {
 }
 
 export interface SmsProviderHealthProbeResult {
-  providerKey: SmsProviderKey;
+  providerKey: string;
   providerDisplayName: string;
   ok: boolean;
   status: SmsProviderOperationalStatus;
@@ -140,7 +140,7 @@ export interface SmsProviderHealthProbeResult {
 }
 
 export interface SmsProviderProbeHistoryEntry {
-  providerKey: SmsProviderKey;
+  providerKey: string;
   providerDisplayName: string;
   checkedAt: string;
   routeKind: SmsProviderRouteKind;
@@ -154,7 +154,7 @@ export interface SmsProviderProbeHistoryEntry {
 }
 
 export interface SmsProviderProbeTrendSnapshot {
-  providerKey: SmsProviderKey;
+  providerKey: string;
   providerDisplayName: string;
   windowStartAt?: string;
   windowEndAt: string;
@@ -189,7 +189,7 @@ export interface EasySmsRuntimeStateSnapshot {
 }
 
 export interface SmsProviderSelectionCandidate {
-  providerKey: SmsProviderKey;
+  providerKey: string;
   providerDisplayName: string;
   routeKind: SmsProviderRouteKind;
   scopeKind: SmsProviderRouteScopeKind;

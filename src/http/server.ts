@@ -69,8 +69,8 @@ export function startHttpServer(
           providers: providerKey
             ? service.listProviderHealth().filter((provider) => provider.providerKey === providerKey)
             : service.listProviderHealth(),
-          routes: service.listRouteHealth(providerKey as never),
-          trends: service.listProbeTrends(providerKey as never),
+          routes: service.listRouteHealth(providerKey),
+          trends: service.listProbeTrends(providerKey),
         });
         return;
       }
@@ -78,8 +78,8 @@ export function startHttpServer(
       if (method === "GET" && url.pathname === "/providers/probe-history") {
         const { providerKey } = parseProviderHealthQuery(url);
         writeJson(response, 200, {
-          history: service.listProbeHistory(providerKey as never),
-          trends: service.listProbeTrends(providerKey as never),
+          history: service.listProbeHistory(providerKey),
+          trends: service.listProbeTrends(providerKey),
         });
         return;
       }
@@ -98,7 +98,7 @@ export function startHttpServer(
         const providerKey = url.searchParams.get("providerKey");
         writeJson(response, 200, {
           results: providerKey
-            ? [await service.probeProvider(providerKey as never)]
+            ? [await service.probeProvider(providerKey)]
             : await service.probeAllProviders(),
         });
         return;
@@ -124,26 +124,26 @@ export function startHttpServer(
         if (method === "POST" && action === "disable") {
           const payload = parseTemporaryDisableInput(await readJsonBody(request));
           writeJson(response, 200, {
-            provider: service.disableProviderTemporarily(providerKey as never, payload),
+            provider: service.disableProviderTemporarily(providerKey, payload),
           });
           return;
         }
 
         if (method === "POST" && action === "enable") {
           writeJson(response, 200, {
-            provider: service.enableProvider(providerKey as never),
+            provider: service.enableProvider(providerKey),
           });
           return;
         }
 
         if (method === "POST" && action === "reset") {
-          writeJson(response, 200, service.resetOperationalState(providerKey as never));
+          writeJson(response, 200, service.resetOperationalState(providerKey));
           return;
         }
 
         if (method === "POST" && action === "probe") {
           writeJson(response, 200, {
-            result: await service.probeProvider(providerKey as never),
+            result: await service.probeProvider(providerKey),
           });
           return;
         }

@@ -10,6 +10,7 @@ import type {
 } from "../../domain/models.js";
 import {
   decodeNumberId,
+  dedupeAndLimit,
   encodeNumberId,
   fetchBrowserRenderedDocumentWithNativeUserAgent,
   inferCountryCode,
@@ -181,22 +182,6 @@ export function detectReceiveSmssBrowserGateMessage($: CheerioAPI): string | und
   }
 
   return undefined;
-}
-
-function dedupeAndLimit(items: SmsPublicNumber[], limit: number): SmsPublicNumber[] {
-  const seen = new Set<string>();
-  const deduped: SmsPublicNumber[] = [];
-
-  for (const item of items) {
-    if (seen.has(item.sourceUrl)) {
-      continue;
-    }
-
-    seen.add(item.sourceUrl);
-    deduped.push(item);
-  }
-
-  return deduped.slice(0, limit);
 }
 
 function formatPhoneNumber(value: string): string | undefined {

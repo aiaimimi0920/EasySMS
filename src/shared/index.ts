@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { load, type CheerioAPI } from "cheerio";
 
 import { ValidationError } from "../domain/errors.js";
-import type { EasySmsRuntimeConfig, SmsNumberReference } from "../domain/models.js";
+import type { EasySmsRuntimeConfig, SmsNumberReference, SmsPublicNumber } from "../domain/models.js";
 
 const countryDialCodeByName: Record<string, string> = {
   usa: "+1",
@@ -104,10 +104,17 @@ const knownDialCodes = Array.from(new Set(Object.values(countryDialCodeByName)))
 );
 
 export async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+  const maxBodySizeBytes = 1024 * 1024;
   const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
 
   for await (const chunk of request) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    totalBytes += buffer.length;
+    if (totalBytes > maxBodySizeBytes) {
+      throw new ValidationError("Request body exceeds maximum allowed size (1 MB).");
+    }
+    chunks.push(buffer);
   }
 
   if (chunks.length === 0) {
@@ -198,6 +205,51 @@ export function matchesCountryFilter(
   }
 
   return true;
+}
+
+export function dedupeAndLimit(items: SmsPublicNumber[], limit: number): SmsPublicNumber[] {
+  const seen = new Set<string>();
+  const deduped: SmsPublicNumber[] = [];
+
+  for (const item of items) {
+    if (seen.has(item.sourceUrl)) {
+      continue;
+    }
+
+    seen.add(item.sourceUrl);
+    deduped.push(item);
+  }
+
+  return deduped.slice(0, limit);
+}
+
+export function takeRoundRobin<T>(groups: T[][], limit: number): T[] {
+  const copies = groups.map((group) => [...group]).filter((group) => group.length > 0);
+  const output: T[] = [];
+
+  while (output.length < limit) {
+    let consumedAny = false;
+
+    for (const group of copies) {
+      const item = group.shift();
+      if (!item) {
+        continue;
+      }
+
+      output.push(item);
+      consumedAny = true;
+
+      if (output.length >= limit) {
+        return output;
+      }
+    }
+
+    if (!consumedAny) {
+      break;
+    }
+  }
+
+  return output;
 }
 
 export async function fetchHtmlDocument(
@@ -317,14 +369,8 @@ async function fetchTextResponse(
     if (response.ok) {
       return await response.text();
     }
-
-    if (response.status !== 403) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-  } catch (error) {
-    if (!(error instanceof Error)) {
-      throw error;
-    }
+  } catch {
+    // fetch failed; fall through to curl
   }
 
   return fetchTextViaCurl(url, config, acceptHeader, referer);

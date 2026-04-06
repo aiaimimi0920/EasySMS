@@ -13,7 +13,6 @@ import type {
   SmsProviderHealthProbeResult,
   SmsProviderHealthSnapshot,
   SmsProviderHealthSummary,
-  SmsProviderKey,
   SmsProviderProbeHistoryEntry,
   SmsProviderProbeTrendSnapshot,
   SmsProviderSelectionCandidate,
@@ -59,15 +58,15 @@ export class EasySmsService {
     return this.operationalState.listProviderHealth(now);
   }
 
-  listRouteHealth(providerKey?: SmsProviderKey, now: Date = new Date()): SmsProviderRouteHealthSnapshot[] {
+  listRouteHealth(providerKey?: string, now: Date = new Date()): SmsProviderRouteHealthSnapshot[] {
     return this.operationalState.listRouteHealth(providerKey, now);
   }
 
-  listProbeHistory(providerKey?: SmsProviderKey, now: Date = new Date()): SmsProviderProbeHistoryEntry[] {
+  listProbeHistory(providerKey?: string, now: Date = new Date()): SmsProviderProbeHistoryEntry[] {
     return this.operationalState.listProbeHistory(providerKey, now);
   }
 
-  listProbeTrends(providerKey?: SmsProviderKey, now: Date = new Date()): SmsProviderProbeTrendSnapshot[] {
+  listProbeTrends(providerKey?: string, now: Date = new Date()): SmsProviderProbeTrendSnapshot[] {
     return this.operationalState.listProbeTrends(providerKey, now);
   }
 
@@ -192,6 +191,13 @@ export class EasySmsService {
       throw new ProviderNotFoundError(options.providerKey);
     }
 
+    if (!provider.descriptor.capabilities.includes("read-public-inbox")) {
+      throw new ProviderRouteUnavailableError(
+        options.providerKey,
+        "This provider does not support reading public inboxes.",
+      );
+    }
+
     const reference = decodeNumberId(options.numberId);
     const context = this.buildInboxRouteContext(provider, reference);
     const availabilityIssue = this.operationalState.getAvailabilityIssue(context);
@@ -215,7 +221,7 @@ export class EasySmsService {
     }
   }
 
-  async probeProvider(providerKey: SmsProviderKey, now: Date = new Date()): Promise<SmsProviderHealthProbeResult> {
+  async probeProvider(providerKey: string, now: Date = new Date()): Promise<SmsProviderHealthProbeResult> {
     const provider = this.providers.get(providerKey);
     if (!provider) {
       throw new ProviderNotFoundError(providerKey);
@@ -308,10 +314,20 @@ export class EasySmsService {
   }
 
   async probeAllProviders(now: Date = new Date()): Promise<SmsProviderHealthProbeResult[]> {
+    const providerKeys = Array.from(this.providers.values(), (p) => p.descriptor.key);
+    const batchSize = 3;
     const results: SmsProviderHealthProbeResult[] = [];
 
-    for (const provider of this.providers.values()) {
-      results.push(await this.probeProvider(provider.descriptor.key, now));
+    for (let i = 0; i < providerKeys.length; i += batchSize) {
+      const batch = providerKeys.slice(i, i + batchSize);
+      const settled = await Promise.allSettled(
+        batch.map((key) => this.probeProvider(key, now)),
+      );
+      for (const result of settled) {
+        if (result.status === "fulfilled") {
+          results.push(result.value);
+        }
+      }
     }
 
     return results;
@@ -321,19 +337,19 @@ export class EasySmsService {
     return this.operationalState.refresh(now);
   }
 
-  resetOperationalState(providerKey?: SmsProviderKey, now: Date = new Date()) {
+  resetOperationalState(providerKey?: string, now: Date = new Date()) {
     return this.operationalState.resetProvider(providerKey, now);
   }
 
   disableProviderTemporarily(
-    providerKey: SmsProviderKey,
+    providerKey: string,
     input: { until: Date; reason: string; now?: Date },
   ): SmsProviderHealthSnapshot {
     this.ensureProviderKeyExists(providerKey);
     return this.operationalState.markTemporaryDisabled(providerKey, input);
   }
 
-  enableProvider(providerKey: SmsProviderKey, now: Date = new Date()): SmsProviderHealthSnapshot {
+  enableProvider(providerKey: string, now: Date = new Date()): SmsProviderHealthSnapshot {
     this.ensureProviderKeyExists(providerKey);
     return this.operationalState.clearTemporaryDisabled(providerKey, now);
   }
@@ -383,7 +399,7 @@ export class EasySmsService {
       .filter((item): item is { provider: SmsProvider; candidate: SmsProviderSelectionCandidate } => item.provider !== undefined);
   }
 
-  private ensureProviderKeyExists(providerKey: SmsProviderKey): void {
+  private ensureProviderKeyExists(providerKey: string): void {
     if (!this.providers.has(providerKey)) {
       throw new ProviderNotFoundError(providerKey);
     }
@@ -456,7 +472,7 @@ export class EasySmsService {
   }
 
   private buildProbeResult(
-    providerKey: SmsProviderKey,
+    providerKey: string,
     providerDisplayName: string,
     input: {
       ok: boolean;
@@ -506,10 +522,7 @@ export function createEasySmsService(config: EasySmsRuntimeConfig): EasySmsServi
     createReceiveSmsFreeCcProvider(config),
     new YunDuanXinProvider(config),
     new Sms24Provider(config),
-  ].filter((provider) => provider.descriptor.enabled);
+  ].filter((provider) => enabledProviders.has(provider.descriptor.key));
 
-  return new EasySmsService(
-    config,
-    providers.filter((provider) => enabledProviders.has(provider.descriptor.key)),
-  );
+  return new EasySmsService(config, providers);
 }
