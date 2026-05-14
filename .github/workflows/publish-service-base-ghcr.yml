@@ -192,6 +192,8 @@ jobs:
               deploy/service/base \
               config.example.yaml \
               scripts/deploy-service-base.ps1 \
+              scripts/test-service-base-instance.ps1 \
+              scripts/remove-service-base.ps1 \
               scripts/materialize-action-config.py \
               scripts/render-derived-configs.py \
               scripts/render-derived-configs.ps1 \
