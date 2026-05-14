@@ -124,6 +124,39 @@ class MaterializeActionConfigTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("EASYSMS_", result.stderr)
 
+    def test_whitespace_separated_enabled_providers_secret_becomes_list(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_config = Path(temp_dir) / "config.example.yaml"
+            output = Path(temp_dir) / "config.yaml"
+            base_config.write_text(
+                textwrap.dedent(
+                    """
+                    serviceBase:
+                      runtime:
+                        providers:
+                          enabledProviders:
+                            - onlinesim
+                            - smstome
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+
+            result = self.run_script(
+                base_config=base_config,
+                output=output,
+                env={
+                    "EASYSMS_PROVIDER_ENABLED_PROVIDERS": "onlinesim smstome receive_smss receive_sms_free_cc sms24 yunduanxin",
+                },
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            data = yaml.safe_load(output.read_text(encoding="utf-8"))
+            self.assertEqual(
+                data["serviceBase"]["runtime"]["providers"]["enabledProviders"],
+                ["onlinesim", "smstome", "receive_smss", "receive_sms_free_cc", "sms24", "yunduanxin"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

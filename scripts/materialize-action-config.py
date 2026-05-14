@@ -73,6 +73,9 @@ def parse_list_secret(name: str) -> list[str] | None:
             return lines
         if "," in parsed:
             return [part.strip() for part in parsed.split(",") if part.strip()]
+        whitespace_parts = [part.strip() for part in parsed.split() if part.strip()]
+        if len(whitespace_parts) > 1:
+            return whitespace_parts
         return normalize_string_list(parsed)
     return normalize_string_list(parsed)
 
