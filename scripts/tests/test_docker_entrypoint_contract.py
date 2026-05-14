@@ -24,7 +24,7 @@ class DockerEntrypointContractTests(unittest.TestCase):
 
         self.assertIn('HOST_CONFIG_PATH="${EASY_SMS_CONFIG_PATH:-/etc/easy-sms/config.yaml}"', script)
         self.assertIn('HOST_RUNTIME_ENV_PATH="${EASY_SMS_RUNTIME_ENV_PATH:-/etc/easy-sms/runtime.env}"', script)
-        self.assertIn('APP_RUNTIME_DIR="${STATE_DIR}/runtime"', script)
+        self.assertIn('APP_RUNTIME_DIR="/tmp/easy-sms-runtime"', script)
         self.assertIn('CONFIG_PATH="${APP_RUNTIME_DIR}/config.yaml"', script)
         self.assertIn('RUNTIME_ENV_PATH="${APP_RUNTIME_DIR}/runtime.env"', script)
         self.assertIn('export EASY_SMS_CONFIG_PATH="$CONFIG_PATH"', script)
