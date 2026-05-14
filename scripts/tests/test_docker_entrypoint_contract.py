@@ -33,6 +33,13 @@ class DockerEntrypointContractTests(unittest.TestCase):
         self.assertIn('cp "$HOST_CONFIG_PATH" "$CONFIG_PATH"', script)
         self.assertIn('cp "$HOST_RUNTIME_ENV_PATH" "$RUNTIME_ENV_PATH"', script)
 
+    def test_rendered_host_config_is_waited_for_before_template_fallback(self) -> None:
+        script = ENTRYPOINT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('wait_for_host_config() {', script)
+        self.assertIn('HOST_CONFIG_WAIT_SECONDS="${EASY_SMS_HOST_CONFIG_WAIT_SECONDS:-10}"', script)
+        self.assertIn('wait_for_host_config', script)
+
 
 if __name__ == "__main__":
     unittest.main()

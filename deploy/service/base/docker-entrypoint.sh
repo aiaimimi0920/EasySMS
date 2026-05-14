@@ -15,6 +15,7 @@ BOOTSTRAP_PATH="${EASY_SMS_BOOTSTRAP_PATH:-/etc/easy-sms/bootstrap/r2-bootstrap.
 IMPORT_CODE="${EASY_SMS_IMPORT_CODE:-}"
 IMPORT_STATE_PATH="${EASY_SMS_IMPORT_STATE_PATH:-${STATE_DIR}/import-sync-state.json}"
 SYNC_FLAG_PATH="${EASY_SMS_IMPORT_SYNC_FLAG_PATH:-${STATE_DIR}/import-sync.restart}"
+HOST_CONFIG_WAIT_SECONDS="${EASY_SMS_HOST_CONFIG_WAIT_SECONDS:-10}"
 APP_RUNTIME_DIR="${STATE_DIR}/runtime"
 CONFIG_PATH="${APP_RUNTIME_DIR}/config.yaml"
 RUNTIME_ENV_PATH="${APP_RUNTIME_DIR}/runtime.env"
@@ -45,6 +46,14 @@ sync_runtime_inputs() {
   fi
 }
 
+wait_for_host_config() {
+  remaining="$HOST_CONFIG_WAIT_SECONDS"
+  while [ ! -f "$HOST_CONFIG_PATH" ] && [ "$remaining" -gt 0 ]; do
+    sleep 1
+    remaining=$((remaining - 1))
+  done
+}
+
 if [ ! -f "$BOOTSTRAP_PATH" ] && [ -n "$IMPORT_CODE" ]; then
   mkdir -p "$(dirname "$BOOTSTRAP_PATH")"
   echo "[easy-sms] import code provided, generating bootstrap file at $BOOTSTRAP_PATH"
@@ -53,7 +62,11 @@ if [ ! -f "$BOOTSTRAP_PATH" ] && [ -n "$IMPORT_CODE" ]; then
     --output "$BOOTSTRAP_PATH"
 fi
 
-if [ ! -f "$CONFIG_PATH" ]; then
+if [ ! -f "$HOST_CONFIG_PATH" ] && [ ! -f "$BOOTSTRAP_PATH" ] && [ -z "$IMPORT_CODE" ]; then
+  wait_for_host_config
+fi
+
+if [ ! -f "$HOST_CONFIG_PATH" ]; then
   if [ -f "$BOOTSTRAP_PATH" ]; then
     echo "[easy-sms] runtime config missing, attempting bootstrap via $BOOTSTRAP_PATH"
     "$PYTHON_BIN" /usr/local/bin/bootstrap-service-config.py \
