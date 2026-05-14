@@ -85,6 +85,15 @@ powershell -ExecutionPolicy Bypass -File .\deploy-host.ps1 `
   -ImportCode "<import-code>"
 ```
 
+If you want the repository to automate the hosted artifact download, import-code
+decrypt, blank-host deploy, verification, and optional cleanup in one step, use:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-blank-host-release-smoke.ps1 `
+  -RunId <successful-publish-run-id> `
+  -PrivateKeyPath .\owner-private-key.txt
+```
+
 If you want the lower-level entrypoint directly:
 
 ```powershell
@@ -138,6 +147,8 @@ GitHub Actions automation lives under `.github/workflows/`:
 
 - `deploy-host.ps1`
 - `scripts/init-config.ps1`
+- `scripts/decrypt-import-code.ps1`
+- `scripts/run-blank-host-release-smoke.ps1`
 - `scripts/render-derived-configs.ps1`
 - `scripts/materialize-action-config.py`
 - `scripts/compile-userscript.ps1`

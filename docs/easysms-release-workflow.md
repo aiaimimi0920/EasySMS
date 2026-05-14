@@ -52,3 +52,13 @@ powershell -ExecutionPolicy Bypass -File .\deploy-host.ps1 `
 
 That path is now the canonical “download one file, pull from GHCR, bootstrap
 from R2” operator flow for EasySms.
+
+If you want to automate the artifact download, import-code decryption,
+blank-host deploy, and provider consistency verification against a specific
+successful publish run, use:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-blank-host-release-smoke.ps1 `
+  -RunId <successful-publish-run-id> `
+  -PrivateKeyPath .\owner-private-key.txt
+```

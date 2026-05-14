@@ -87,6 +87,22 @@ powershell -ExecutionPolicy Bypass -File .\deploy-host.ps1 `
 - `/providers`
 - secured smoke if an API key is configured
 
+If you want one script to perform the artifact download, import-code decryption,
+blank-host deploy, provider consistency checks, and cleanup, use:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-blank-host-release-smoke.ps1 `
+  -RunId <successful-publish-run-id> `
+  -PrivateKeyPath .\owner-private-key.txt
+```
+
+The helper verifies consistency across:
+
+- `/healthz`
+- `/providers`
+- `/providers/health`
+- `/sms/catalog`
+
 ## 5. Current local proof points
 
 The local repo already proves these preconditions:
