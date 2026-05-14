@@ -19,6 +19,20 @@ class DockerEntrypointContractTests(unittest.TestCase):
         self.assertIn('"$PYTHON_BIN" /usr/local/bin/bootstrap-service-config.py', script)
         self.assertIn('"$PYTHON_BIN" - "$BOOTSTRAP_PATH"', script)
 
+    def test_runtime_reads_from_internal_staging_copy_not_host_bind_mount(self) -> None:
+        script = ENTRYPOINT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('HOST_CONFIG_PATH="${EASY_SMS_CONFIG_PATH:-/etc/easy-sms/config.yaml}"', script)
+        self.assertIn('HOST_RUNTIME_ENV_PATH="${EASY_SMS_RUNTIME_ENV_PATH:-/etc/easy-sms/runtime.env}"', script)
+        self.assertIn('APP_RUNTIME_DIR="${STATE_DIR}/runtime"', script)
+        self.assertIn('CONFIG_PATH="${APP_RUNTIME_DIR}/config.yaml"', script)
+        self.assertIn('RUNTIME_ENV_PATH="${APP_RUNTIME_DIR}/runtime.env"', script)
+        self.assertIn('export EASY_SMS_CONFIG_PATH="$CONFIG_PATH"', script)
+        self.assertIn('export EASY_SMS_RUNTIME_ENV_PATH="$RUNTIME_ENV_PATH"', script)
+        self.assertIn('sync_runtime_inputs() {', script)
+        self.assertIn('cp "$HOST_CONFIG_PATH" "$CONFIG_PATH"', script)
+        self.assertIn('cp "$HOST_RUNTIME_ENV_PATH" "$RUNTIME_ENV_PATH"', script)
+
 
 if __name__ == "__main__":
     unittest.main()

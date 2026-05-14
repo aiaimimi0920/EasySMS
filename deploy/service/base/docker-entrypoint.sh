@@ -8,14 +8,18 @@ case "${EASY_SMS_STATE_DIR:-}" in
   *C:*|*\\*) EASY_SMS_STATE_DIR="/var/lib/easy-sms" ;;
 esac
 
-CONFIG_PATH="${EASY_SMS_CONFIG_PATH:-/etc/easy-sms/config.yaml}"
+HOST_CONFIG_PATH="${EASY_SMS_CONFIG_PATH:-/etc/easy-sms/config.yaml}"
 STATE_DIR="${EASY_SMS_STATE_DIR:-/var/lib/easy-sms}"
-RUNTIME_ENV_PATH="${EASY_SMS_RUNTIME_ENV_PATH:-/etc/easy-sms/runtime.env}"
+HOST_RUNTIME_ENV_PATH="${EASY_SMS_RUNTIME_ENV_PATH:-/etc/easy-sms/runtime.env}"
 BOOTSTRAP_PATH="${EASY_SMS_BOOTSTRAP_PATH:-/etc/easy-sms/bootstrap/r2-bootstrap.json}"
 IMPORT_CODE="${EASY_SMS_IMPORT_CODE:-}"
 IMPORT_STATE_PATH="${EASY_SMS_IMPORT_STATE_PATH:-${STATE_DIR}/import-sync-state.json}"
 SYNC_FLAG_PATH="${EASY_SMS_IMPORT_SYNC_FLAG_PATH:-${STATE_DIR}/import-sync.restart}"
+APP_RUNTIME_DIR="${STATE_DIR}/runtime"
+CONFIG_PATH="${APP_RUNTIME_DIR}/config.yaml"
+RUNTIME_ENV_PATH="${APP_RUNTIME_DIR}/runtime.env"
 export EASY_SMS_CONFIG_PATH="$CONFIG_PATH"
+export EASY_SMS_RUNTIME_ENV_PATH="$RUNTIME_ENV_PATH"
 export EASY_SMS_STATE_DIR="$STATE_DIR"
 RESET_STORE_ON_BOOT="${EASY_SMS_RESET_STORE_ON_BOOT:-false}"
 STATE_LAYOUT_DIR="${STATE_DIR}/state"
@@ -30,7 +34,16 @@ else
   exit 1
 fi
 
-mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$RUNTIME_ENV_PATH")" "$STATE_DIR" "$STATE_LAYOUT_DIR"
+mkdir -p "$(dirname "$HOST_CONFIG_PATH")" "$(dirname "$HOST_RUNTIME_ENV_PATH")" "$APP_RUNTIME_DIR" "$STATE_DIR" "$STATE_LAYOUT_DIR"
+
+sync_runtime_inputs() {
+  cp "$HOST_CONFIG_PATH" "$CONFIG_PATH"
+  if [ -f "$HOST_RUNTIME_ENV_PATH" ]; then
+    cp "$HOST_RUNTIME_ENV_PATH" "$RUNTIME_ENV_PATH"
+  else
+    rm -f "$RUNTIME_ENV_PATH"
+  fi
+}
 
 if [ ! -f "$BOOTSTRAP_PATH" ] && [ -n "$IMPORT_CODE" ]; then
   mkdir -p "$(dirname "$BOOTSTRAP_PATH")"
@@ -45,16 +58,16 @@ if [ ! -f "$CONFIG_PATH" ]; then
     echo "[easy-sms] runtime config missing, attempting bootstrap via $BOOTSTRAP_PATH"
     "$PYTHON_BIN" /usr/local/bin/bootstrap-service-config.py \
       --bootstrap-path "$BOOTSTRAP_PATH" \
-      --config-path "$CONFIG_PATH" \
-      --runtime-env-path "$RUNTIME_ENV_PATH" \
+      --config-path "$HOST_CONFIG_PATH" \
+      --runtime-env-path "$HOST_RUNTIME_ENV_PATH" \
       --state-path "$IMPORT_STATE_PATH"
   elif [ -f "$TEMPLATE_PATH" ]; then
-    cp "$TEMPLATE_PATH" "$CONFIG_PATH"
+    cp "$TEMPLATE_PATH" "$HOST_CONFIG_PATH"
   fi
 fi
 
-if [ ! -f "$CONFIG_PATH" ]; then
-  echo "[easy-sms] missing generated runtime config at $CONFIG_PATH" >&2
+if [ ! -f "$HOST_CONFIG_PATH" ]; then
+  echo "[easy-sms] missing generated runtime config at $HOST_CONFIG_PATH" >&2
   echo "[easy-sms] provide a rendered config.yaml or mount $BOOTSTRAP_PATH so the container can pull it from R2" >&2
   exit 1
 fi
@@ -67,6 +80,8 @@ case "$(echo "$RESET_STORE_ON_BOOT" | tr '[:upper:]' '[:lower:]')" in
   *)
     ;;
 esac
+
+sync_runtime_inputs
 
 if [ -f "$RUNTIME_ENV_PATH" ]; then
   set -a
@@ -118,8 +133,8 @@ start_sync_loop() {
       sleep "$SYNC_INTERVAL_SECONDS"
       "$PYTHON_BIN" /usr/local/bin/bootstrap-service-config.py \
         --bootstrap-path "$BOOTSTRAP_PATH" \
-        --config-path "$CONFIG_PATH" \
-        --runtime-env-path "$RUNTIME_ENV_PATH" \
+        --config-path "$HOST_CONFIG_PATH" \
+        --runtime-env-path "$HOST_RUNTIME_ENV_PATH" \
         --state-path "$IMPORT_STATE_PATH" \
         --mode sync \
         --updated-flag-path "$SYNC_FLAG_PATH"
@@ -143,6 +158,7 @@ fi
 
 while true; do
   rm -f "$SYNC_FLAG_PATH"
+  sync_runtime_inputs
   start_runtime "$@"
   if [ "$SYNC_ENABLED" = "true" ] && [ -f "$BOOTSTRAP_PATH" ]; then
     start_sync_loop "$SYNC_INTERVAL_SECONDS"
@@ -159,6 +175,7 @@ while true; do
   fi
 
   if [ -f "$SYNC_FLAG_PATH" ]; then
+    sync_runtime_inputs
     rm -f "$SYNC_FLAG_PATH"
     continue
   fi
