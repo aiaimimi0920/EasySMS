@@ -4,6 +4,7 @@ param(
     [string]$Image = "",
     [switch]$Rebuild,
     [int]$HostPort = 18082,
+    [string]$InstanceName = "",
     [string]$ContainerName = "easy-sms-service-test",
     [string]$ComposeProjectName = "easysms-service-base-test",
     [switch]$Cleanup = $true
@@ -91,6 +92,13 @@ $effectiveConfigPath = $resolvedConfigPath
 if (-not [string]::IsNullOrWhiteSpace($ApiKey)) {
     $effectiveConfigPath = New-SecuredSmokeConfig -SourcePath $resolvedConfigPath -BearerApiKey $ApiKey
 }
+$effectiveInstanceName = if (-not [string]::IsNullOrWhiteSpace($InstanceName)) {
+    $InstanceName
+} elseif (-not [string]::IsNullOrWhiteSpace($ApiKey)) {
+    "$ComposeProjectName-secure"
+} else {
+    "$ComposeProjectName-public"
+}
 
 & $smokeScript `
     -ConfigPath $effectiveConfigPath `
@@ -98,6 +106,7 @@ if (-not [string]::IsNullOrWhiteSpace($ApiKey)) {
     -Image $Image `
     -Rebuild:$Rebuild `
     -HostPort $HostPort `
+    -InstanceName $effectiveInstanceName `
     -ContainerName $ContainerName `
     -ComposeProjectName $ComposeProjectName `
     -Cleanup:$Cleanup

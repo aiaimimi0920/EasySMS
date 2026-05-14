@@ -5,6 +5,7 @@ param(
   [switch]$Rebuild,
   [string]$Image = "",
   [int]$HostPort = 18081,
+  [string]$InstanceName = "",
   [string]$ContainerName = "easy-sms-service",
   [string]$ComposeProjectName = "easysms-service-base-smoke",
   [switch]$Cleanup
@@ -44,12 +45,14 @@ try {
       -ConfigPath $ConfigPath `
       -Image $Image `
       -HostPort $HostPort `
+      -InstanceName $InstanceName `
       -ContainerName $ContainerName `
       -ComposeProjectName $ComposeProjectName
   } else {
     & $deployScript `
       -ConfigPath $ConfigPath `
       -HostPort $HostPort `
+      -InstanceName $InstanceName `
       -ContainerName $ContainerName `
       -ComposeProjectName $ComposeProjectName
   }
