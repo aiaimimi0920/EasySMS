@@ -24,6 +24,19 @@ function Resolve-EasySmsScriptPath {
     return Join-Path $repoRoot $PathValue
 }
 
+function Get-EasySmsStableHash {
+    param([string]$Value)
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+        $hashBytes = $sha256.ComputeHash($bytes)
+        return ([System.BitConverter]::ToString($hashBytes)).Replace('-', '').ToLowerInvariant().Substring(0, 10)
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
 function New-SecuredSmokeConfig {
     param(
         [string]$SourcePath,
@@ -94,10 +107,17 @@ if (-not [string]::IsNullOrWhiteSpace($ApiKey)) {
 }
 $effectiveInstanceName = if (-not [string]::IsNullOrWhiteSpace($InstanceName)) {
     $InstanceName
-} elseif (-not [string]::IsNullOrWhiteSpace($ApiKey)) {
-    "$ComposeProjectName-secure"
 } else {
-    "$ComposeProjectName-public"
+    $scope = if (-not [string]::IsNullOrWhiteSpace($ApiKey)) { "secure" } else { "public" }
+    $identitySeed = @(
+        $ComposeProjectName,
+        $scope,
+        $resolvedConfigPath,
+        $effectiveConfigPath,
+        $Image,
+        [string]$HostPort
+    ) -join "|"
+    "$ComposeProjectName-$scope-$(Get-EasySmsStableHash -Value $identitySeed)"
 }
 
 & $smokeScript `
