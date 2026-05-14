@@ -92,4 +92,34 @@ describe("EasySms provider catalog", () => {
     expect(paidProviders.map((item) => item.key)).toEqual(["hero_sms"]);
     expect(activationProviders.map((item) => item.key)).toEqual(["onlinesim", "hero_sms"]);
   });
+
+  it("includes paid activation providers in provider health summaries", () => {
+    const service = new EasySmsService(
+      createConfig(),
+      [
+        new FakeSmsProvider({
+          key: "onlinesim",
+          displayName: "Free Provider",
+          homepageUrl: "https://example.com/free",
+          sourceType: "public-web-scrape",
+          costTier: "free",
+          capabilities: ["list-public-numbers", "read-public-inbox"],
+          enabled: true,
+          countryHints: [],
+          notes: [],
+        }),
+      ],
+    );
+
+    const providerKeys = service.listProviders().map((item) => item.key);
+    const healthKeys = service.listProviderHealth().map((item) => item.providerKey);
+    const summary = service.getHealthSummary();
+    const runtimeSnapshotProviderKeys = service.getRuntimeStateSnapshot().providers.map((item) => item.providerKey);
+
+    expect(providerKeys).toEqual(["onlinesim", "hero_sms"]);
+    expect(healthKeys).toEqual(["onlinesim", "hero_sms"]);
+    expect(runtimeSnapshotProviderKeys).toEqual(["onlinesim", "hero_sms"]);
+    expect(summary.totalProviders).toBe(2);
+    expect(summary.activeCount).toBe(2);
+  });
 });

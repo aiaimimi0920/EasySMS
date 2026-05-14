@@ -534,7 +534,14 @@ export class EasySmsService {
   }
 
   listProviderHealth(now: Date = new Date()): SmsProviderHealthSnapshot[] {
-    return this.operationalState.listProviderHealth(now);
+    const trackedSnapshots = new Map(
+      this.operationalState.listProviderHealth(now).map((snapshot) => [snapshot.providerKey, snapshot] as const),
+    );
+
+    return this.listProviders().map((descriptor) =>
+      trackedSnapshots.get(descriptor.key)
+      ?? this.createSyntheticProviderHealthSnapshot(descriptor)
+    );
   }
 
   listRouteHealth(providerKey?: string, now: Date = new Date()): SmsProviderRouteHealthSnapshot[] {
@@ -2173,6 +2180,21 @@ export class EasySmsService {
     return Array.from(this.providers.values(), (provider) => provider.descriptor);
   }
 
+  private createSyntheticProviderHealthSnapshot(descriptor: ProviderDescriptor): SmsProviderHealthSnapshot {
+    return {
+      providerKey: descriptor.key,
+      providerDisplayName: descriptor.displayName,
+      status: "active",
+      healthState: "unknown",
+      healthScore: 1,
+      consecutiveFailures: 0,
+      activeRouteCoolingCount: 0,
+      lastDetail: descriptor.costTier === "paid"
+        ? "This provider is enabled but does not participate in scrape-route health probes."
+        : "This provider is enabled but has not reported scrape-route health yet.",
+    };
+  }
+
   private matchesListCostTier(descriptor: ProviderDescriptor, costTier?: CostTier): boolean {
     if (!costTier) {
       return true;
@@ -2181,12 +2203,24 @@ export class EasySmsService {
   }
 
   getHealthSummary(now: Date = new Date()): SmsProviderHealthSummary {
-    return this.operationalState.summarize(now);
+    const providers = this.listProviderHealth(now);
+    return {
+      totalProviders: providers.length,
+      activeCount: providers.filter((provider) => provider.status === "active").length,
+      coolingCount: providers.filter((provider) => provider.status === "cooling").length,
+      temporarilyDisabledCount: providers.filter((provider) => provider.status === "temporarily_disabled").length,
+      degradedCount: providers.filter((provider) => provider.status === "degraded").length,
+      challengeCount: providers.filter((provider) => provider.healthState === "challenge").length,
+      blockedCount: providers.filter((provider) => provider.healthState === "blocked").length,
+      emptyCount: providers.filter((provider) => provider.healthState === "empty").length,
+    };
   }
 
   getRuntimeStateSnapshot(now: Date = new Date()): EasySmsRuntimeStateSnapshot {
+    const baseSnapshot = this.operationalState.snapshot(now);
     return {
-      ...this.operationalState.snapshot(now),
+      ...baseSnapshot,
+      providers: this.listProviderHealth(now),
       managedSessions: this.querySessions({ newestFirst: true }),
       observedMessages: this.queryStoredObservedMessages({ newestFirst: true }),
       projectedMessages: this.queryStoredProjectedMessages({ newestFirst: true }),
