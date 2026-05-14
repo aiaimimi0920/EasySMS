@@ -46,16 +46,16 @@ Invoke-InDirectory -Path $repoRoot -Action {
 
 Write-Host "Validating operator scripts..."
 Invoke-InDirectory -Path $repoRoot -Action {
-    Invoke-NativeCommand python -m unittest ".\scripts\tests\test_materialize_action_config.py" ".\scripts\tests\test_render_derived_configs.py" ".\scripts\tests\test_easysms_import_code.py" ".\scripts\tests\test_deploy_host_contract.py" ".\scripts\tests\test_publish_workflow_secrets.py" ".\scripts\tests\test_smoke_script_contract.py" ".\scripts\tests\test_docker_entrypoint_contract.py"
+    Invoke-NativeCommand python -m unittest ".\scripts\tests\test_materialize_action_config.py" ".\scripts\tests\test_render_derived_configs.py" ".\scripts\tests\test_easysms_import_code.py" ".\scripts\tests\test_deploy_host_contract.py" ".\scripts\tests\test_publish_workflow_secrets.py" ".\scripts\tests\test_smoke_script_contract.py" ".\scripts\tests\test_docker_entrypoint_contract.py" ".\scripts\tests\test_test_all_contract.py"
 }
 
 Write-Host "Validating service/base..."
 Invoke-InDirectory -Path $serviceBaseDir -Action { Invoke-NativeCommand npm ci }
 $serviceTsc = Resolve-EasySmsLocalNodeTool -PackageDirectory $serviceBaseDir -ToolName "tsc"
 $serviceVitest = Resolve-EasySmsLocalNodeTool -PackageDirectory $serviceBaseDir -ToolName "vitest"
-Invoke-InDirectory -Path $serviceBaseDir -Action { Invoke-NativeCommand $serviceTsc -p tsconfig.json --noEmit }
+Invoke-InDirectory -Path $serviceBaseDir -Action { Invoke-NativeCommand $serviceTsc "--project" "tsconfig.json" "--noEmit" }
 Invoke-InDirectory -Path $serviceBaseDir -Action { Invoke-NativeCommand $serviceVitest run }
-Invoke-InDirectory -Path $serviceBaseDir -Action { Invoke-NativeCommand $serviceTsc -p tsconfig.json }
+Invoke-InDirectory -Path $serviceBaseDir -Action { Invoke-NativeCommand $serviceTsc "--project" "tsconfig.json" }
 
 Write-Host "Validating config renderer..."
 $rendererTempRoot = Join-Path $repoRoot ".tmp\\validation-derived"
