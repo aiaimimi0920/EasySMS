@@ -1,0 +1,26 @@
+{
+  "name": "easy-sms",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-runtime-assets.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx src/runtime/main.ts",
+    "start": "node dist/src/runtime/main.js",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.6"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0-rc.12",
+    "yaml": "^2.8.1"
+  }
+}

@@ -1,0 +1,443 @@
+name: Publish Service Base GHCR
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "release-*"
+      - "service-base-*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional image version tag override"
+        required: false
+        type: string
+      platform:
+        description: "Docker build platform list"
+        required: false
+        default: "linux/amd64"
+        type: string
+      push_latest:
+        description: "Also publish the latest tag"
+        required: false
+        default: true
+        type: boolean
+      run_smoke:
+        description: "Run service/base smoke check before pushing"
+        required: false
+        default: true
+        type: boolean
+      force_publish:
+        description: "Publish even when the current commit does not touch service/base or deployment files"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: easy-sms-service
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Materialize Operator Config
+        env:
+          EASYSMS_SERVICE_CONTAINER_ENVIRONMENT: ${{ secrets.EASYSMS_SERVICE_CONTAINER_ENVIRONMENT }}
+          EASYSMS_SERVICE_RUNTIME_API_KEY: ${{ secrets.EASYSMS_SERVICE_RUNTIME_API_KEY }}
+          EASYSMS_PROVIDER_ENABLED_PROVIDERS: ${{ secrets.EASYSMS_PROVIDER_ENABLED_PROVIDERS }}
+          EASYSMS_PROVIDER_ONLINESIM_API_KEY: ${{ secrets.EASYSMS_PROVIDER_ONLINESIM_API_KEY }}
+          EASYSMS_PROVIDER_SMSTOME_EMAIL: ${{ secrets.EASYSMS_PROVIDER_SMSTOME_EMAIL }}
+          EASYSMS_PROVIDER_SMSTOME_PASSWORD: ${{ secrets.EASYSMS_PROVIDER_SMSTOME_PASSWORD }}
+          EASYSMS_PROVIDER_RECEIVE_SMSS_USERNAME: ${{ secrets.EASYSMS_PROVIDER_RECEIVE_SMSS_USERNAME }}
+          EASYSMS_PROVIDER_RECEIVE_SMSS_PASSWORD: ${{ secrets.EASYSMS_PROVIDER_RECEIVE_SMSS_PASSWORD }}
+          EASYSMS_PROVIDER_RECEIVE_SMS_FREE_CC_EMAIL: ${{ secrets.EASYSMS_PROVIDER_RECEIVE_SMS_FREE_CC_EMAIL }}
+          EASYSMS_PROVIDER_RECEIVE_SMS_FREE_CC_PASSWORD: ${{ secrets.EASYSMS_PROVIDER_RECEIVE_SMS_FREE_CC_PASSWORD }}
+          EASYSMS_PROVIDER_HERO_SMS_ENABLED: ${{ secrets.EASYSMS_PROVIDER_HERO_SMS_ENABLED }}
+          EASYSMS_PROVIDER_HERO_SMS_API_KEY: ${{ secrets.EASYSMS_PROVIDER_HERO_SMS_API_KEY }}
+          EASYSMS_PROVIDER_HERO_SMS_BASE_URL: ${{ secrets.EASYSMS_PROVIDER_HERO_SMS_BASE_URL }}
+          EASYSMS_PROVIDER_HERO_SMS_DEFAULT_SERVICE: ${{ secrets.EASYSMS_PROVIDER_HERO_SMS_DEFAULT_SERVICE }}
+          EASYSMS_PROVIDER_HERO_SMS_DEFAULT_COUNTRY: ${{ secrets.EASYSMS_PROVIDER_HERO_SMS_DEFAULT_COUNTRY }}
+          EASYSMS_PROVIDER_HERO_SMS_SELECTION_MODE: ${{ secrets.EASYSMS_PROVIDER_HERO_SMS_SELECTION_MODE }}
+          EASYSMS_PROVIDER_HERO_SMS_REUSE_ENABLED: ${{ secrets.EASYSMS_PROVIDER_HERO_SMS_REUSE_ENABLED }}
+          EASYSMS_PROVIDER_HERO_SMS_DEFAULT_MAX_BINDINGS_PER_PHONE: ${{ secrets.EASYSMS_PROVIDER_HERO_SMS_DEFAULT_MAX_BINDINGS_PER_PHONE }}
+          EASYSMS_PROVIDER_HERO_SMS_REFUNDABLE_CANCEL_WINDOW_SECONDS: ${{ secrets.EASYSMS_PROVIDER_HERO_SMS_REFUNDABLE_CANCEL_WINDOW_SECONDS }}
+          EASYSMS_PROVIDER_HERO_SMS_LEASE_WINDOW_SECONDS: ${{ secrets.EASYSMS_PROVIDER_HERO_SMS_LEASE_WINDOW_SECONDS }}
+          EASYSMS_USERSCRIPT_PROVIDER_MODE: ${{ secrets.EASYSMS_USERSCRIPT_PROVIDER_MODE }}
+          EASYSMS_USERSCRIPT_EXPLICIT_PROVIDER_KEY: ${{ secrets.EASYSMS_USERSCRIPT_EXPLICIT_PROVIDER_KEY }}
+          EASYSMS_USERSCRIPT_SELECTED_PROVIDERS: ${{ secrets.EASYSMS_USERSCRIPT_SELECTED_PROVIDERS }}
+          EASYSMS_USERSCRIPT_ONLINESIM_API_KEY: ${{ secrets.EASYSMS_USERSCRIPT_ONLINESIM_API_KEY }}
+          EASYSMS_USERSCRIPT_SMSTOME_EMAIL: ${{ secrets.EASYSMS_USERSCRIPT_SMSTOME_EMAIL }}
+          EASYSMS_USERSCRIPT_SMSTOME_PASSWORD: ${{ secrets.EASYSMS_USERSCRIPT_SMSTOME_PASSWORD }}
+          EASYSMS_USERSCRIPT_RECEIVE_SMSS_USERNAME: ${{ secrets.EASYSMS_USERSCRIPT_RECEIVE_SMSS_USERNAME }}
+          EASYSMS_USERSCRIPT_RECEIVE_SMSS_PASSWORD: ${{ secrets.EASYSMS_USERSCRIPT_RECEIVE_SMSS_PASSWORD }}
+          EASYSMS_USERSCRIPT_RECEIVE_SMS_FREE_CC_EMAIL: ${{ secrets.EASYSMS_USERSCRIPT_RECEIVE_SMS_FREE_CC_EMAIL }}
+          EASYSMS_USERSCRIPT_RECEIVE_SMS_FREE_CC_PASSWORD: ${{ secrets.EASYSMS_USERSCRIPT_RECEIVE_SMS_FREE_CC_PASSWORD }}
+          EASYSMS_USERSCRIPT_HERO_SMS_API_KEY: ${{ secrets.EASYSMS_USERSCRIPT_HERO_SMS_API_KEY }}
+          EASYSMS_USERSCRIPT_HERO_SMS_BASE_URL: ${{ secrets.EASYSMS_USERSCRIPT_HERO_SMS_BASE_URL }}
+          EASYSMS_USERSCRIPT_HERO_SMS_SERVICE: ${{ secrets.EASYSMS_USERSCRIPT_HERO_SMS_SERVICE }}
+          EASYSMS_USERSCRIPT_HERO_SMS_COUNTRY: ${{ secrets.EASYSMS_USERSCRIPT_HERO_SMS_COUNTRY }}
+          EASYSMS_USERSCRIPT_HERO_SMS_OPERATOR: ${{ secrets.EASYSMS_USERSCRIPT_HERO_SMS_OPERATOR }}
+          EASYSMS_USERSCRIPT_HERO_SMS_SELECTION_MODE: ${{ secrets.EASYSMS_USERSCRIPT_HERO_SMS_SELECTION_MODE }}
+          EASYSMS_USERSCRIPT_HERO_SMS_ALLOW_REUSE: ${{ secrets.EASYSMS_USERSCRIPT_HERO_SMS_ALLOW_REUSE }}
+          EASYSMS_USERSCRIPT_HERO_SMS_BUSINESS_KEY: ${{ secrets.EASYSMS_USERSCRIPT_HERO_SMS_BUSINESS_KEY }}
+          EASYSMS_USERSCRIPT_HERO_SMS_MAX_BINDINGS_PER_PHONE: ${{ secrets.EASYSMS_USERSCRIPT_HERO_SMS_MAX_BINDINGS_PER_PHONE }}
+          EASYSMS_R2_CONFIG_ENABLED: ${{ secrets.EASYSMS_R2_CONFIG_ENABLED }}
+          EASYSMS_R2_CONFIG_ACCOUNT_ID: ${{ secrets.EASYSMS_R2_CONFIG_ACCOUNT_ID }}
+          EASYSMS_R2_CONFIG_BUCKET: ${{ secrets.EASYSMS_R2_CONFIG_BUCKET }}
+          EASYSMS_R2_CONFIG_ENDPOINT: ${{ secrets.EASYSMS_R2_CONFIG_ENDPOINT }}
+          EASYSMS_R2_CONFIG_CONFIG_OBJECT_KEY: ${{ secrets.EASYSMS_R2_CONFIG_CONFIG_OBJECT_KEY }}
+          EASYSMS_R2_CONFIG_ENV_OBJECT_KEY: ${{ secrets.EASYSMS_R2_CONFIG_ENV_OBJECT_KEY }}
+          EASYSMS_R2_CONFIG_USERSCRIPT_OBJECT_KEY: ${{ secrets.EASYSMS_R2_CONFIG_USERSCRIPT_OBJECT_KEY }}
+          EASYSMS_R2_CONFIG_MANIFEST_OBJECT_KEY: ${{ secrets.EASYSMS_R2_CONFIG_MANIFEST_OBJECT_KEY }}
+          EASYSMS_R2_CONFIG_UPLOAD_ACCESS_KEY_ID: ${{ secrets.EASYSMS_R2_CONFIG_UPLOAD_ACCESS_KEY_ID }}
+          EASYSMS_R2_CONFIG_UPLOAD_SECRET_ACCESS_KEY: ${{ secrets.EASYSMS_R2_CONFIG_UPLOAD_SECRET_ACCESS_KEY }}
+          EASYSMS_R2_CONFIG_READ_ACCESS_KEY_ID: ${{ secrets.EASYSMS_R2_CONFIG_READ_ACCESS_KEY_ID }}
+          EASYSMS_R2_CONFIG_READ_SECRET_ACCESS_KEY: ${{ secrets.EASYSMS_R2_CONFIG_READ_SECRET_ACCESS_KEY }}
+          EASYSMS_R2_CONFIG_IMPORT_CODE_OWNER_PUBLIC_KEY: ${{ secrets.EASYSMS_R2_CONFIG_IMPORT_CODE_OWNER_PUBLIC_KEY }}
+          EASYSMS_R2_CONFIG_SYNC_ENABLED: ${{ secrets.EASYSMS_R2_CONFIG_SYNC_ENABLED }}
+          EASYSMS_R2_CONFIG_SYNC_INTERVAL_SECONDS: ${{ secrets.EASYSMS_R2_CONFIG_SYNC_INTERVAL_SECONDS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pyyaml
+          python scripts/materialize-action-config.py \
+            --base-config config.example.yaml \
+            --output config.yaml
+
+      - name: Resolve Release Metadata
+        id: release_meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          short_sha="$(git rev-parse --short HEAD)"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            version="${GITHUB_REF_NAME}"
+            push_latest="true"
+            run_smoke="true"
+            platform="linux/amd64"
+            force_publish="false"
+          else
+            version="${{ inputs.version }}"
+            if [[ -z "${version}" ]]; then
+              version="release-$(date -u +%Y%m%d)-$(printf '%03d' "${GITHUB_RUN_NUMBER}")"
+            fi
+            push_latest="${{ inputs.push_latest }}"
+            run_smoke="${{ inputs.run_smoke }}"
+            platform="${{ inputs.platform }}"
+            force_publish="${{ inputs.force_publish }}"
+          fi
+
+          image_ref="${REGISTRY}/${owner}/${IMAGE_NAME}"
+          smoke_image="${image_ref}:smoke-${GITHUB_RUN_ID}"
+
+          {
+            echo "owner=${owner}"
+            echo "version=${version}"
+            echo "short_sha=${short_sha}"
+            echo "platform=${platform}"
+            echo "image_ref=${image_ref}"
+            echo "smoke_image=${smoke_image}"
+            echo "push_latest=${push_latest}"
+            echo "run_smoke=${run_smoke}"
+            echo "force_publish=${force_publish}"
+            echo "tags<<EOF"
+            echo "${image_ref}:${version}"
+            echo "${image_ref}:sha-${short_sha}"
+            if [[ "${push_latest}" == "true" ]]; then
+              echo "${image_ref}:latest"
+            fi
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Detect Relevant Changes
+        id: change_gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ steps.release_meta.outputs.force_publish }}" == "true" ]]; then
+            {
+              echo "should_publish=true"
+              echo "reason=force_publish"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          mapfile -t matched_files < <(
+            git diff-tree --no-commit-id --name-only -r "${GITHUB_SHA}" -- \
+              service/base \
+              deploy/service/base \
+              config.example.yaml \
+              scripts/deploy-service-base.ps1 \
+              scripts/materialize-action-config.py \
+              scripts/render-derived-configs.py \
+              scripts/render-derived-configs.ps1 \
+              scripts/upload-service-base-r2-config.ps1 \
+              scripts/upload-service-base-r2-config.py \
+              scripts/write-service-base-r2-bootstrap.ps1 \
+              scripts/easysms-import-code.py \
+              deploy-host.ps1 \
+              .github/workflows/publish-service-base-ghcr.yml
+          )
+
+          if [[ "${#matched_files[@]}" -eq 0 ]]; then
+            {
+              echo "should_publish=false"
+              echo "reason=no_relevant_changes"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          {
+            echo "should_publish=true"
+            echo "reason=relevant_changes_detected"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Skip Publish Summary
+        if: steps.change_gate.outputs.should_publish != 'true'
+        shell: bash
+        run: |
+          {
+            echo "## Service Base GHCR Publish"
+            echo
+            echo "- Result: skipped"
+            echo "- Reason: \`${{ steps.change_gate.outputs.reason }}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Set Up Docker Buildx
+        if: steps.change_gate.outputs.should_publish == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Smoke Image
+        if: steps.change_gate.outputs.should_publish == 'true' && steps.release_meta.outputs.run_smoke == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            -f deploy/service/base/Dockerfile \
+            -t "${{ steps.release_meta.outputs.smoke_image }}" \
+            .
+
+      - name: Run Service Base Smoke Check
+        if: steps.change_gate.outputs.should_publish == 'true' && steps.release_meta.outputs.run_smoke == 'true'
+        shell: pwsh
+        run: >
+          .\scripts\test-service-base-instance.ps1
+          -ConfigPath .\config.yaml
+          -Image "${{ steps.release_meta.outputs.smoke_image }}"
+          -Cleanup
+
+      - name: Run Secured Service Base Smoke Check
+        if: steps.change_gate.outputs.should_publish == 'true' && steps.release_meta.outputs.run_smoke == 'true'
+        shell: pwsh
+        run: >
+          .\scripts\test-service-base-instance.ps1
+          -ConfigPath .\config.yaml
+          -Image "${{ steps.release_meta.outputs.smoke_image }}"
+          -ApiKey "workflow-smoke-key"
+          -Cleanup
+
+      - name: Log In To GHCR
+        if: steps.change_gate.outputs.should_publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.EASYSMS_PUBLISH_GHCR_USERNAME != '' && secrets.EASYSMS_PUBLISH_GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.EASYSMS_PUBLISH_GHCR_TOKEN != '' && secrets.EASYSMS_PUBLISH_GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build And Push Service Base Image
+        if: steps.change_gate.outputs.should_publish == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/service/base/Dockerfile
+          push: true
+          provenance: mode=max
+          sbom: true
+          platforms: ${{ steps.release_meta.outputs.platform }}
+          tags: ${{ steps.release_meta.outputs.tags }}
+          cache-from: type=gha,scope=service-base-ghcr
+          cache-to: type=gha,mode=max,scope=service-base-ghcr
+
+      - name: Pull Published Image
+        if: steps.change_gate.outputs.should_publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker image rm "${{ steps.release_meta.outputs.image_ref }}:${{ steps.release_meta.outputs.version }}" --force 2>/dev/null || true
+          docker pull "${{ steps.release_meta.outputs.image_ref }}:${{ steps.release_meta.outputs.version }}"
+
+      - name: Verify Published Image Smoke Check
+        if: steps.change_gate.outputs.should_publish == 'true'
+        shell: pwsh
+        run: >
+          .\scripts\test-service-base-instance.ps1
+          -ConfigPath .\config.yaml
+          -Image "${{ steps.release_meta.outputs.image_ref }}:${{ steps.release_meta.outputs.version }}"
+          -Cleanup
+
+      - name: Verify Published Image Secured Smoke Check
+        if: steps.change_gate.outputs.should_publish == 'true'
+        shell: pwsh
+        run: >
+          .\scripts\test-service-base-instance.ps1
+          -ConfigPath .\config.yaml
+          -Image "${{ steps.release_meta.outputs.image_ref }}:${{ steps.release_meta.outputs.version }}"
+          -ApiKey "workflow-smoke-key"
+          -Cleanup
+
+      - name: Upload Service Base Runtime Config To R2
+        if: steps.change_gate.outputs.should_publish == 'true'
+        id: runtime_config_upload
+        env:
+          EASYSMS_R2_CONFIG_ACCOUNT_ID: ${{ secrets.EASYSMS_R2_CONFIG_ACCOUNT_ID }}
+          EASYSMS_R2_CONFIG_BUCKET: ${{ secrets.EASYSMS_R2_CONFIG_BUCKET }}
+          EASYSMS_R2_CONFIG_ENDPOINT: ${{ secrets.EASYSMS_R2_CONFIG_ENDPOINT }}
+          EASYSMS_R2_CONFIG_CONFIG_OBJECT_KEY: ${{ secrets.EASYSMS_R2_CONFIG_CONFIG_OBJECT_KEY }}
+          EASYSMS_R2_CONFIG_ENV_OBJECT_KEY: ${{ secrets.EASYSMS_R2_CONFIG_ENV_OBJECT_KEY }}
+          EASYSMS_R2_CONFIG_USERSCRIPT_OBJECT_KEY: ${{ secrets.EASYSMS_R2_CONFIG_USERSCRIPT_OBJECT_KEY }}
+          EASYSMS_R2_CONFIG_MANIFEST_OBJECT_KEY: ${{ secrets.EASYSMS_R2_CONFIG_MANIFEST_OBJECT_KEY }}
+          EASYSMS_R2_CONFIG_UPLOAD_ACCESS_KEY_ID: ${{ secrets.EASYSMS_R2_CONFIG_UPLOAD_ACCESS_KEY_ID }}
+          EASYSMS_R2_CONFIG_UPLOAD_SECRET_ACCESS_KEY: ${{ secrets.EASYSMS_R2_CONFIG_UPLOAD_SECRET_ACCESS_KEY }}
+        shell: pwsh
+        run: |
+          foreach ($name in @(
+            'EASYSMS_R2_CONFIG_ACCOUNT_ID',
+            'EASYSMS_R2_CONFIG_BUCKET',
+            'EASYSMS_R2_CONFIG_CONFIG_OBJECT_KEY',
+            'EASYSMS_R2_CONFIG_ENV_OBJECT_KEY',
+            'EASYSMS_R2_CONFIG_USERSCRIPT_OBJECT_KEY',
+            'EASYSMS_R2_CONFIG_MANIFEST_OBJECT_KEY',
+            'EASYSMS_R2_CONFIG_UPLOAD_ACCESS_KEY_ID',
+            'EASYSMS_R2_CONFIG_UPLOAD_SECRET_ACCESS_KEY'
+          )) {
+            if ([string]::IsNullOrWhiteSpace([string](Get-Item "Env:$name").Value)) {
+              throw "Missing required R2 config secret: $name"
+            }
+          }
+
+          $manifestPath = Join-Path $PWD 'service-base-r2-config-manifest.json'
+          .\scripts\upload-service-base-r2-config.ps1 `
+            -ConfigPath .\config.yaml `
+            -AccountId $env:EASYSMS_R2_CONFIG_ACCOUNT_ID `
+            -Bucket $env:EASYSMS_R2_CONFIG_BUCKET `
+            -AccessKeyId $env:EASYSMS_R2_CONFIG_UPLOAD_ACCESS_KEY_ID `
+            -SecretAccessKey $env:EASYSMS_R2_CONFIG_UPLOAD_SECRET_ACCESS_KEY `
+            -ConfigObjectKey $env:EASYSMS_R2_CONFIG_CONFIG_OBJECT_KEY `
+            -RuntimeEnvObjectKey $env:EASYSMS_R2_CONFIG_ENV_OBJECT_KEY `
+            -UserscriptSettingsObjectKey $env:EASYSMS_R2_CONFIG_USERSCRIPT_OBJECT_KEY `
+            -ManifestObjectKey $env:EASYSMS_R2_CONFIG_MANIFEST_OBJECT_KEY `
+            -Endpoint $env:EASYSMS_R2_CONFIG_ENDPOINT `
+            -ReleaseVersion '${{ steps.release_meta.outputs.version }}' `
+            -ManifestOutput $manifestPath
+
+          "path=$manifestPath" >> $env:GITHUB_OUTPUT
+
+      - name: Generate Encrypted Owner Import Code
+        if: steps.change_gate.outputs.should_publish == 'true'
+        id: import_code
+        env:
+          EASYSMS_R2_CONFIG_ACCOUNT_ID: ${{ secrets.EASYSMS_R2_CONFIG_ACCOUNT_ID }}
+          EASYSMS_R2_CONFIG_BUCKET: ${{ secrets.EASYSMS_R2_CONFIG_BUCKET }}
+          EASYSMS_R2_CONFIG_ENDPOINT: ${{ secrets.EASYSMS_R2_CONFIG_ENDPOINT }}
+          EASYSMS_R2_CONFIG_MANIFEST_OBJECT_KEY: ${{ secrets.EASYSMS_R2_CONFIG_MANIFEST_OBJECT_KEY }}
+          EASYSMS_R2_CONFIG_READ_ACCESS_KEY_ID: ${{ secrets.EASYSMS_R2_CONFIG_READ_ACCESS_KEY_ID }}
+          EASYSMS_R2_CONFIG_READ_SECRET_ACCESS_KEY: ${{ secrets.EASYSMS_R2_CONFIG_READ_SECRET_ACCESS_KEY }}
+          EASYSMS_IMPORT_CODE_OWNER_PUBLIC_KEY: ${{ secrets.EASYSMS_R2_CONFIG_IMPORT_CODE_OWNER_PUBLIC_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for name in \
+            EASYSMS_R2_CONFIG_ACCOUNT_ID \
+            EASYSMS_R2_CONFIG_BUCKET \
+            EASYSMS_R2_CONFIG_MANIFEST_OBJECT_KEY \
+            EASYSMS_R2_CONFIG_READ_ACCESS_KEY_ID \
+            EASYSMS_R2_CONFIG_READ_SECRET_ACCESS_KEY \
+            EASYSMS_IMPORT_CODE_OWNER_PUBLIC_KEY
+          do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required import-code secret: ${name}" >&2
+              exit 1
+            fi
+          done
+
+          python -m pip install --disable-pip-version-check pynacl
+
+          python scripts/easysms-import-code.py encode \
+            --account-id "${EASYSMS_R2_CONFIG_ACCOUNT_ID}" \
+            --bucket "${EASYSMS_R2_CONFIG_BUCKET}" \
+            --manifest-object-key "${EASYSMS_R2_CONFIG_MANIFEST_OBJECT_KEY}" \
+            --access-key-id "${EASYSMS_R2_CONFIG_READ_ACCESS_KEY_ID}" \
+            --secret-access-key "${EASYSMS_R2_CONFIG_READ_SECRET_ACCESS_KEY}" \
+            --endpoint "${EASYSMS_R2_CONFIG_ENDPOINT}" \
+            --sync-enabled \
+            --sync-interval-seconds 7200 \
+            --release-version "${{ steps.release_meta.outputs.version }}" \
+            --json-output \
+            --output service-base-import-code.bundle.json
+
+          python scripts/easysms-import-code.py encrypt \
+            --bundle-file service-base-import-code.bundle.json \
+            --public-key "${EASYSMS_IMPORT_CODE_OWNER_PUBLIC_KEY}" \
+            --metadata-json "{\"releaseVersion\":\"${{ steps.release_meta.outputs.version }}\",\"imageRef\":\"${{ steps.release_meta.outputs.image_ref }}\",\"manifestObjectKey\":\"${EASYSMS_R2_CONFIG_MANIFEST_OBJECT_KEY}\"}" \
+            --output service-base-import-code.encrypted.json
+
+          echo "bundle_path=service-base-import-code.bundle.json" >> "${GITHUB_OUTPUT}"
+          echo "encrypted_path=service-base-import-code.encrypted.json" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload Runtime Config Distribution Manifest
+        if: steps.change_gate.outputs.should_publish == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: service-base-r2-config-manifest
+          path: ${{ steps.runtime_config_upload.outputs.path }}
+
+      - name: Upload Encrypted Import Code
+        if: steps.change_gate.outputs.should_publish == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: service-base-import-code-encrypted
+          path: ${{ steps.import_code.outputs.encrypted_path }}
+
+      - name: Write Release Summary
+        if: steps.change_gate.outputs.should_publish == 'true'
+        shell: bash
+        run: |
+          {
+            echo "## Service Base GHCR Publish"
+            echo
+            echo "- Image:"
+            echo "  - \`${{ steps.release_meta.outputs.image_ref }}:${{ steps.release_meta.outputs.version }}\`"
+            echo "  - \`${{ steps.release_meta.outputs.image_ref }}:sha-${{ steps.release_meta.outputs.short_sha }}\`"
+            if [[ "${{ steps.release_meta.outputs.push_latest }}" == "true" ]]; then
+              echo "  - \`${{ steps.release_meta.outputs.image_ref }}:latest\`"
+            fi
+            echo "- Runtime config manifest artifact: \`service-base-r2-config-manifest\`"
+            echo "- Encrypted import code artifact: \`service-base-import-code-encrypted\`"
+            echo "- Blank-host bootstrap path: \`deploy-host.ps1 -NoBuild -Pull -Image <tag> -ImportCode <code>\`"
+          } >> "${GITHUB_STEP_SUMMARY}"

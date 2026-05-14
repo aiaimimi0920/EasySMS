@@ -1,169 +1,189 @@
-# EasySMS
+# EasySms
 
-`EasySMS` 是 `SMSService` 工作区中的免费公共短信聚合服务，统一对外暴露 HTTP API，把多个公开接码网站抽象成同一套号码列表与短信收件箱接口。
+EasySms is the public monorepo entrypoint for the EasySms ecosystem.
 
-当前版本已包含：
+It contains:
 
-- 文件驱动运行时契约
-- 多站点 HTML / 公共 JSON API provider
-- 浏览器风格请求头 + `curl` 回退抓取链路
-- 可选本机浏览器 `--dump-dom` 渲染回退，用于识别前端渲染 / gate 页面
-- provider 健康检查、冷却/熔断、临时禁用与状态快照
-- HTTP health / provider catalog / provider health / public number / inbox / admin 控制接口
-- Docker 部署骨架
-- TypeScript + Vitest 开发基线
+- `service/base`: the local EasySMS HTTP runtime
+- `runtimes/userscript`: the browser-side userscript runtime
+- `deploy`: deployment templates and operational scripts
+- `docs`: repository-level architecture, quickstart, and workflow guidance
 
-canonical repo：
+This repository intentionally avoids submodules. External contributors only need
+one repository checkout and one root operator config.
 
-- `C:\Users\Public\nas_home\AI\GameEditor\SMSService\repos\EasySMS`
+## Development Workflow
 
----
+See `docs/development-workflow.md` for the shared cross-repository development
+rules used for copy-only migration, local-first validation, and final release
+checks.
 
-## Runtime Contract（文件驱动）
+## Toolchain
 
-运行时配置采用固定文件契约：
+- Node.js `20+` is the minimum supported version across the repo.
+- Python 3.10+ is required for config rendering helpers.
+- The repository root includes `.nvmrc` and `.node-version` to pin the shared
+  baseline.
 
-- canonical runtime config：`/etc/easy-sms/config.yaml`
-- canonical state dir：`/var/lib/easy-sms`
+## Repository Layout
 
-`config.yaml` 顶层结构固定为：
+```text
+service/
+  base/
+runtimes/
+  userscript/
+deploy/
+  service/
+    base/
+docs/
+scripts/
+```
 
-- `server`
-- `strategy`
-- `maintenance`
-- `persistence`
-- `scraping`
-- `providers`
+## Module Roles
 
-容器环境变量只保留最小三项：
+### `service/base`
 
-- `EASY_SMS_CONFIG_PATH`
-- `EASY_SMS_STATE_DIR`
-- `EASY_SMS_RESET_STORE_ON_BOOT`
+The local service runtime. This is the main EasySms control plane that owns:
 
----
+- provider catalog and provider defaults
+- HTTP API surface
+- session-first one-stop SMS workflow API
+- public number and inbox aggregation
+- optional paid-provider activation flows such as `HeroSMS`
+- optional `HeroSMS` / `SMS-Activate` style compatibility facade for activation clients
+- paid `HeroSMS` flows now support strategy-based country/operator selection, lease reuse for the same business, and refundable-cancel timing metadata
+- provider health, cooldown, and operational state
+- runtime bootstrap and persistence loops
 
-## 仓内结构
+### `runtimes/userscript`
 
-- `src/domain/`：领域模型、错误与 provider / inbox 数据结构
-- `src/defaults/`：默认运行时配置
-- `src/providers/`：provider adapters（当前包含 `freephonenum`、`jiemahao`、`onlinesim`、`quackr`、`receivesms_co`、`receive_smss`、`temp_number`、`temporary_phone_number`、`receive_sms_free_cc`、`yunduanxin`、`sms24`）
-- `src/service/`：`EasySmsService` 与服务编排
-- `src/service/provider-operational-state.ts`：provider 健康状态、路由冷却、临时禁用与失败分类
-- `src/http/`：统一 HTTP contracts 与 server
-- `src/runtime/`：YAML config 解析、维护循环与持久化循环
-- `src/persistence/`：运行时状态快照读写
-- `src/shared/`：仓内共享 helpers
-- `tests/`：单元测试
+The browser-side EasySMS runtime. It is a browser-native operator helper, not a
+thin bridge that requires `service/base` to be online.
 
-入口：
+## Quick Start
 
-- `src/index.ts`
-- `src/runtime/main.ts`
-- `index.ts`
+### Local service runtime
 
----
-
-## Deploy / Docker 资产位置
-
-工作区级部署资产位于：
-
-- `C:\Users\Public\nas_home\AI\GameEditor\SMSService\deploy\EasySMS`
-
----
-
-## 本地验证
-
-在仓库根目录执行：
+The repository root includes a host-facing one-click deploy wrapper:
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy-host.ps1
+```
+
+That wrapper now supports both:
+
+- local repo deploys with `config.yaml`
+- blank-host GHCR + bootstrap deploys with `-ImportCode` or `-BootstrapFile`
+
+Example blank-host style path:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy-host.ps1 `
+  -NoBuild `
+  -Pull `
+  -Image ghcr.io/<owner>/easy-sms-service:<tag> `
+  -ImportCode "<import-code>"
+```
+
+If you want the lower-level entrypoint directly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\deploy-service-base.ps1
+```
+
+And if you only want the package-level runtime checks:
+
+```powershell
+Set-Location service/base
 npm install
 npm run typecheck
 npm run test
 npm run build
 ```
 
-## Health / Cooling
+### Browser userscript runtime
 
-`EasySMS` 现在会持续维护 provider 运行状态：
+Generate a local userscript directly from the root `config.yaml`:
 
-- 自动探测每个 provider 当前是“可抓 / challenge / 空站 / blocked / degraded”
-- 对 challenge、连接异常、通用失败分别应用不同的 penalty 与 cooldown
-- 支持按路由维度冷却：
-  - `list-public-numbers` 的 provider 级或 country 级路由
-  - `read-public-inbox` 的 provider 级或 country 级路由
-- 支持 provider 级临时禁用
-- 支持把运行时状态快照持久化到 `persistence.filePath`
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\compile-userscript.ps1
+```
 
-当前管理接口：
+Validation writes generated output under `.tmp/` so it does not overwrite your
+working userscript file.
 
-- `GET /providers/health`
-- `GET /providers/selection-plan`
-- `GET /providers/probe-history`
-- `POST /providers/probe`
-- `POST /admin/providers/{providerKey}/probe`
-- `POST /admin/providers/{providerKey}/disable`
-- `POST /admin/providers/{providerKey}/enable`
-- `POST /admin/providers/{providerKey}/reset`
+## Documentation
 
-`maintenance` 额外配置项：
+- `docs/architecture.md`
+- `docs/api-contract.md`
+- `docs/tech-stack.md`
+- `docs/quickstart.md`
+- `docs/userscript-parity-matrix.md`
+- `docs/userscript-live-smoke.md`
+- `docs/configuration.md`
+- `docs/build-service-base-image.md`
+- `docs/build-userscript.md`
+- `docs/easysms-release-workflow.md`
+- `docs/github-actions-secrets.md`
+- `docs/hosted-release-readiness.md`
+- `docs/root-host-deploy-standard.md`
+- `docs/development-workflow.md`
 
-- `activeProbeEnabled`
-- `activeProbeIntervalMs`
+GitHub Actions automation lives under `.github/workflows/`:
 
-当前 provider 选择模式：
+- `validate.yml`
+- `publish-service-base-ghcr.yml`
 
-- `aggregate-latest`
-  会按加权排序后的 provider 顺序分批抓取，优先从更健康、惩罚更低的 provider 填满 `limit`
-- `weighted-fallback`
-  会按加权排序后的 provider 顺序逐个 fallback，命中第一个返回非空号码列表的 provider 后立即停止
+## Operator Scripts
 
-加权排序会综合以下信号：
+- `deploy-host.ps1`
+- `scripts/init-config.ps1`
+- `scripts/render-derived-configs.ps1`
+- `scripts/materialize-action-config.py`
+- `scripts/compile-userscript.ps1`
+- `scripts/validate-userscript.ps1`
+- `scripts/compile-service-base-image.ps1`
+- `scripts/deploy-service-base.ps1`
+- `scripts/write-service-base-r2-bootstrap.ps1`
+- `scripts/upload-service-base-r2-config.ps1`
+- `scripts/easysms-import-code.py`
+- `scripts/remove-service-base.ps1`
+- `scripts/test-service-base-instance.ps1`
+- `scripts/test-hero-sms-provider.ps1`
+- `scripts/start-leetcode-controlled-browser.ps1`
+- `scripts/test-leetcode-signup-delivery.mjs`
+- `scripts/test-all.ps1`
 
-- provider `healthScore`
-- provider 当前状态：`active` / `cooling` / `temporarily_disabled` / `degraded`
-- provider 级路由 penalty
-- country 级路由 penalty
-- 最近错误类别：如 challenge / network / generic
-- 最近是否出现空目录响应
+## Shared Config
 
-主动探测结果会维护一个历史窗口，并对错误类别做分桶统计：
+Copy `config.example.yaml` to `config.yaml` before running the operator scripts.
+The root `config.yaml` is the single source of operator-managed settings for:
 
-- `healthy`
-- `empty`
-- `challenge`
-- `blocked`
-- `degraded`
+- userscript generation
+- service/base image and container defaults
+- the rendered `deploy/service/base/config/config.yaml`
+- the rendered `deploy/service/base/config/runtime.env`
+- optional paid-provider credentials and defaults such as `providers.heroSms`
+- GHCR publication metadata
+- R2/bootstrap/import-code distribution metadata
 
-趋势评分会优先惩罚“最近 24 小时内反复出现 challenge / blocked”的 provider。这样像 `quackr` 这类经常被 verification gate 命中的 provider，即使偶尔恢复，也不会立刻回到最前排。
+For the current default free providers:
 
-## 当前实现范围
+- `providers.onlineSim.apiKey` is the canonical authenticated path for `onlinesim`
+  in `service/base`
+- `providers.receiveSmss.username/password` is the canonical authenticated path
+  for `receive_smss` in `service/base`
+- `providers.receiveSmsFreeCc.email/password` is the canonical authenticated path
+  for protected `receive_sms_free_cc` pages
+- `sms24` is also supported in `service/base` via a pure HTTP,
+  curl_cffi-backed fetch path with the same 30-minute verification freshness rule
 
-- 已接入并验证可抓取：
-  - `freephonenum`
-  - `jiemahao`
-  - `onlinesim`
-  - `quackr`
-  - `receivesms_co`
-  - `receive_smss`
-  - `temp_number`
-  - `temporary_phone_number`
-  - `receive_sms_free_cc`
-  - `yunduanxin`
-  - `sms24`
-- 已调研但暂未接入：
-  - `smstome`：站点首页与国家页可达，但在 2026-04-05 的匿名浏览器渲染下号码页会落到 Cloudflare 错误页
-  - `receivesms.org`：`active-numbers` 页面当前直接显示没有可用号码，接入后只会长期返回空列表
-  - `smsreceivefree.com`：在 2026-04-05 的当前网络环境下，`curl` TLS 握手失败，匿名浏览器请求则会落到 `ERR_CONNECTION_CLOSED`
-  - `oksms.org`：匿名请求会落到 Cloudflare challenge
-  - `tempsmsonline.com`：目录页可达，但已检查的号码页在 2026-04-05 主要暴露前端壳页面，未确认稳定公开 inbox 数据源
-  - `disposablesms.com`：首页号码目前以 `XXXX` 打码展示，不符合当前公共号码聚合的接入标准
-  - `hero-sms`：收费注册服务，不属于当前 free aggregator 首批接入范围
+For repository validation, `scripts/validate-userscript.ps1` uses
+`config.example.yaml` and writes generated output under `.tmp/`.
 
-当前限制说明：
+## Security Notes
 
-- `onlinesim`：现在按国家可枚举多个公开号码，但在 2026-04-05 的公开接口状态下，短信收件箱只稳定暴露国家页当前主号码。
-- `quackr`：公开号码列表已接入；在 2026-04-05 的匿名状态下，公共 API 与浏览器渲染号码页都会命中 verification / login gate，因此默认仅标记为列表型 provider。
-- `receivesms_co`：目录页和号码页都可通过常规 HTML 抓取读取，不需要额外浏览器回退。
-- `jiemahao`：国家页列号可抓；但在 2026-04-05 的匿名状态下，`/sms/?phone=...` 需要先过 Turnstile 并提交表单，因此默认仅标记为列表型 provider。
-- `receive_smss`：在 2026-04-05 的当前环境下，必须走“原生浏览器 UA + DOM 渲染”链路；带固定抓取 UA 的 HTTP / 浏览器请求都会更容易命中 Cloudflare challenge。
+- Do not commit local deployment config, state, or generated userscript files.
+- Do not commit live API tokens, provider cookies, or operator-only overrides.
+- Legacy `SMSService` remains reference-only and should not be modified as part
+  of forward development in this new monorepo.

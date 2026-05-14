@@ -1,0 +1,30 @@
+services:
+  easy-sms-service:
+    build:
+      context: ../../..
+      dockerfile: deploy/service/base/Dockerfile
+    image: ${EASY_SMS_IMAGE:-easy-sms/easy-sms-service:local}
+    container_name: ${EASY_SMS_CONTAINER_NAME:-easy-sms}
+    restart: unless-stopped
+    ports:
+      - "${EASY_SMS_HOST_PORT:-18081}:8080"
+    env_file:
+      - ${EASY_SMS_ENV_FILE:-./config/runtime.env}
+    environment:
+      EASY_SMS_CONFIG_PATH: /etc/easy-sms/config.yaml
+      EASY_SMS_RUNTIME_ENV_PATH: /etc/easy-sms/runtime.env
+      EASY_SMS_BOOTSTRAP_PATH: /etc/easy-sms/bootstrap/r2-bootstrap.json
+      EASY_SMS_STATE_DIR: /var/lib/easy-sms
+      EASY_SMS_RESET_STORE_ON_BOOT: "${EASY_SMS_RESET_STORE_ON_BOOT:-false}"
+    volumes:
+      - ${EASY_SMS_CONFIG_DIR:-./config}:/etc/easy-sms
+      - ${EASY_SMS_DATA_DIR:-./data}:/var/lib/easy-sms
+    networks:
+      easysms_service_network:
+        aliases:
+          - ${EASY_SMS_NETWORK_ALIAS:-easy-sms}
+
+networks:
+  easysms_service_network:
+    name: ${EASY_SMS_NETWORK:-EasyAiMi}
+    external: true

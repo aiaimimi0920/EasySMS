@@ -1,0 +1,65 @@
+name: Validate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        shell: pwsh
+        run: python -m pip install pyyaml
+
+      - name: Create Local Operator Config
+        shell: pwsh
+        run: Copy-Item config.example.yaml config.yaml -Force
+
+      - name: Run Repository Validation
+        shell: pwsh
+        run: .\scripts\test-all.ps1
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        shell: pwsh
+        run: python -m pip install pyyaml
+
+      - name: Create Local Operator Config
+        shell: pwsh
+        run: Copy-Item config.example.yaml config.yaml -Force
+
+      - name: Run Docker Smoke Check
+        shell: pwsh
+        run: .\scripts\test-service-base-instance.ps1 -Cleanup
+
+      - name: Run Secured Docker Smoke Check
+        shell: pwsh
+        run: .\scripts\test-service-base-instance.ps1 -ApiKey "validate-workflow-key" -Cleanup

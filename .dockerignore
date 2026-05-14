@@ -1,0 +1,13 @@
+.git
+.github
+.tmp
+config.yaml
+
+service/base/node_modules
+service/base/dist
+service/base/coverage
+
+runtimes/userscript/easy_sms_proxy.local.user.js
+runtimes/userscript/easy_sms_proxy.secrets.local.json
+
+deploy/service/base/data

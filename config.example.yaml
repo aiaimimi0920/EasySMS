@@ -1,0 +1,133 @@
+# EasySms operator config
+#
+# Copy this file to `config.yaml` and fill in the values you actually use.
+# The operator scripts read only the root `config.yaml`; they generate any
+# derived deploy files they need at runtime.
+
+userscript:
+  sourcePath: runtimes/userscript/easy_sms_proxy.user.js
+  outputPath: runtimes/userscript/easy_sms_proxy.local.user.js
+  copyToClipboard: false
+  defaults:
+    providerMode: auto
+    explicitProviderKey: onlinesim
+    selectedProvidersCsv: onlinesim,smstome,receive_smss,receive_sms_free_cc,sms24,yunduanxin
+    countryName: ""
+    countryCode: ""
+    overallLimit: "8"
+    pollSeconds: "5"
+    timeoutSeconds: "180"
+    senderContains: ""
+    codeRegex: "(?:^|[^\\d])(\\d{4,8})(?!\\d)"
+    newestFirst: "true"
+    autoFillPhoneOnAcquire: "false"
+    autoFillCodeOnRead: "false"
+    forceFillNonEmpty: "false"
+    highlightTargets: "false"
+    onlineSimApiKey: ""
+    smsToMeEmail: ""
+    smsToMePassword: ""
+    receiveSmssUsername: ""
+    receiveSmssPassword: ""
+    receiveSmsFreeCcEmail: ""
+    receiveSmsFreeCcPassword: ""
+    heroSmsApiKey: ""
+    heroSmsBaseUrl: "https://hero-sms.com/stubs/handler_api.php"
+    heroSmsService: "dr"
+    heroSmsCountry: "16"
+    heroSmsOperator: ""
+    heroSmsSelectionMode: "balanced"
+    heroSmsAllowReuse: "true"
+    heroSmsBusinessKey: "default"
+    heroSmsMaxBindingsPerPhone: "1"
+
+serviceBase:
+  context: .
+  dockerfile: deploy/service/base/Dockerfile
+  image: easy-sms/easy-sms-service:local
+  hostPort: 18081
+  containerName: easy-sms
+  containerEnvironment: {}
+  runtime:
+    server:
+      host: 0.0.0.0
+      port: 8080
+      # apiKey: "replace-with-bearer-token"
+
+    strategy:
+      strictProviderMode: false
+      providerStrategyModeId: aggregate-latest
+
+    maintenance:
+      enabled: true
+      intervalMs: 30000
+      keepRecentCount: 100
+      activeProbeEnabled: true
+      activeProbeIntervalMs: 300000
+
+    persistence:
+      enabled: false
+      driver: file
+      intervalMs: 60000
+      filePath: state/easy-sms-state.json
+
+    scraping:
+      requestTimeoutMs: 15000
+      maxNumbersPerProvider: 20
+      userAgent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36
+
+    providers:
+      enabledProviders:
+        - onlinesim
+        - smstome
+        - receive_smss
+        - receive_sms_free_cc
+        - sms24
+        - yunduanxin
+      onlineSim:
+        # Canonical service/base auth path for onlinesim.
+        # Official docs support either ?apikey=... or Authorization: Bearer <apikey>.
+        apiKey: ""
+      smsToMe:
+        email: ""
+        password: ""
+      receiveSmss:
+        username: ""
+        password: ""
+      receiveSmsFreeCc:
+        email: ""
+        password: ""
+      heroSms:
+        enabled: false
+        apiKey: ""
+        baseUrl: https://hero-sms.com/stubs/handler_api.php
+        defaultService: dr
+        defaultCountry: 16
+        selectionMode: balanced
+        reuseEnabled: true
+        defaultMaxBindingsPerPhone: 1
+        refundableCancelWindowSeconds: 120
+        leaseWindowSeconds: 1200
+
+publishing:
+  ghcr:
+    registry: ghcr.io
+    owner: ""
+    username: ""
+    token: ""
+  r2Config:
+    enabled: false
+    accountId: ""
+    bucket: ""
+    endpoint: ""
+    configObjectKey: easysms/service-base/config.yaml
+    runtimeEnvObjectKey: easysms/service-base/runtime.env
+    userscriptSettingsObjectKey: easysms/service-base/userscript-defaults.json
+    manifestObjectKey: easysms/service-base/manifest.json
+    uploadAccessKeyId: ""
+    uploadSecretAccessKey: ""
+    readAccessKeyId: ""
+    readSecretAccessKey: ""
+    importCodeOwnerPublicKey: ""
+    syncEnabled: true
+    syncIntervalSeconds: 7200

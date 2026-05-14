@@ -1,0 +1,31 @@
+param(
+  [string]$Owner = $env:GITHUB_REPOSITORY_OWNER,
+  [string]$Tag = (Get-Date -Format "yyyyMMddHHmmss"),
+  [switch]$Push,
+  [string]$ImageName = "easy-sms-service"
+)
+
+if (-not $Owner) {
+  throw "Owner is required. Pass -Owner or set GITHUB_REPOSITORY_OWNER."
+}
+
+$repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+$image = "ghcr.io/$Owner/$ImageName"
+
+docker build `
+  -f (Join-Path $repoRoot "deploy/service/base/Dockerfile") `
+  -t "${image}:${Tag}" `
+  $repoRoot
+
+if ($LASTEXITCODE -ne 0) {
+  throw "Docker build failed."
+}
+
+if ($Push) {
+  docker push "${image}:${Tag}"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Docker push failed."
+  }
+}
+
+Write-Host "Built image ${image}:${Tag}"
