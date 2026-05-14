@@ -133,6 +133,7 @@ working userscript file.
 - `docs/build-service-base-image.md`
 - `docs/build-userscript.md`
 - `docs/easysms-release-workflow.md`
+- `docs/release-acceptance-standard.md`
 - `docs/github-actions-secrets.md`
 - `docs/hosted-release-readiness.md`
 - `docs/root-host-deploy-standard.md`

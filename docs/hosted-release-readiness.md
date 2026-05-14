@@ -119,3 +119,8 @@ So if hosted validation still fails after sync, the next place to look is:
 - R2 permissions
 - GHCR permissions
 - the public repository contents being out of date
+
+Once the hosted path and blank-host helper are both green, record the final
+operator-level signoff against:
+
+- `docs/release-acceptance-standard.md`

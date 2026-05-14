@@ -29,6 +29,7 @@ See also:
 
 - `docs/github-actions-secrets.md`
 - `docs/root-host-deploy-standard.md`
+- `docs/release-acceptance-standard.md`
 
 ## Manual GHCR Publish
 
