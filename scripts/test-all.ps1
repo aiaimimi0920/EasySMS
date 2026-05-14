@@ -46,7 +46,7 @@ Invoke-InDirectory -Path $repoRoot -Action {
 
 Write-Host "Validating operator scripts..."
 Invoke-InDirectory -Path $repoRoot -Action {
-    Invoke-NativeCommand python -m unittest ".\scripts\tests\test_materialize_action_config.py" ".\scripts\tests\test_render_derived_configs.py" ".\scripts\tests\test_easysms_import_code.py" ".\scripts\tests\test_deploy_host_contract.py" ".\scripts\tests\test_publish_workflow_secrets.py"
+    Invoke-NativeCommand python -m unittest ".\scripts\tests\test_materialize_action_config.py" ".\scripts\tests\test_render_derived_configs.py" ".\scripts\tests\test_easysms_import_code.py" ".\scripts\tests\test_deploy_host_contract.py" ".\scripts\tests\test_publish_workflow_secrets.py" ".\scripts\tests\test_smoke_script_contract.py"
 }
 
 Write-Host "Validating service/base..."

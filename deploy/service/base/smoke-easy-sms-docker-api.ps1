@@ -21,18 +21,26 @@ function Get-EasySmsStatusCode {
     [hashtable]$Headers = @{}
   )
 
-  $arguments = @("-s", "-o", "NUL", "-w", "%{http_code}")
+  $response = $null
+  $request = [System.Net.WebRequest]::Create($Uri)
+  $request.Method = "GET"
   foreach ($key in $Headers.Keys) {
-    $arguments += @("-H", "${key}: $($Headers[$key])")
+    $request.Headers[$key] = [string]$Headers[$key]
   }
-  $arguments += $Uri
 
-  $status = & curl.exe @arguments
-  $parsed = 0
-  if (-not [int]::TryParse([string]$status, [ref]$parsed)) {
-    throw "Failed to parse HTTP status code from curl output: $status"
+  try {
+    $response = $request.GetResponse()
+    return [int]([System.Net.HttpWebResponse]$response).StatusCode
+  } catch [System.Net.WebException] {
+    if ($null -ne $_.Exception.Response) {
+      return [int]([System.Net.HttpWebResponse]$_.Exception.Response).StatusCode
+    }
+    throw
+  } finally {
+    if ($null -ne $response) {
+      $response.Dispose()
+    }
   }
-  return $parsed
 }
 
 if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
