@@ -203,6 +203,26 @@ try {
     Write-Warning "Facade getPrices did not return the requested service key; continuing because free metadata can be empty when upstream sources are sparse."
   }
 
+  $providerKeys = @($providers.providers | ForEach-Object { [string]$_.key })
+  $catalogProviderKeys = @($catalog.catalog.providers | ForEach-Object { [string]$_.key })
+  $providerHealthKeys = @($providerHealth.providers | ForEach-Object { [string]$_.providerKey })
+
+  if ((Compare-Object -ReferenceObject $providerKeys -DifferenceObject $catalogProviderKeys)) {
+    throw "Provider catalog keys differed between /providers and /sms/catalog."
+  }
+
+  if ((Compare-Object -ReferenceObject $providerKeys -DifferenceObject $providerHealthKeys)) {
+    throw "Provider catalog keys differed between /providers and /providers/health."
+  }
+
+  if ($health.providerCount -ne $providerHealth.summary.totalProviders) {
+    throw "Provider counts differed between /healthz ($($health.providerCount)) and /providers/health ($($providerHealth.summary.totalProviders))."
+  }
+
+  if ($health.providerCount -ne $providerKeys.Count) {
+    throw "Provider count from /healthz ($($health.providerCount)) did not match /providers count ($($providerKeys.Count))."
+  }
+
   Write-Host "Health:" ($health | ConvertTo-Json -Depth 4)
   Write-Host "Providers:" ($providers | ConvertTo-Json -Depth 6)
   Write-Host "Session Catalog:" ($catalog | ConvertTo-Json -Depth 6)
