@@ -21,12 +21,21 @@ RESET_STORE_ON_BOOT="${EASY_SMS_RESET_STORE_ON_BOOT:-false}"
 STATE_LAYOUT_DIR="${STATE_DIR}/state"
 TEMPLATE_PATH="/opt/easy-sms/config.template.yaml"
 
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="python3"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN="python"
+else
+  echo "[easy-sms] neither python3 nor python is available in the runtime image" >&2
+  exit 1
+fi
+
 mkdir -p "$(dirname "$CONFIG_PATH")" "$(dirname "$RUNTIME_ENV_PATH")" "$STATE_DIR" "$STATE_LAYOUT_DIR"
 
 if [ ! -f "$BOOTSTRAP_PATH" ] && [ -n "$IMPORT_CODE" ]; then
   mkdir -p "$(dirname "$BOOTSTRAP_PATH")"
   echo "[easy-sms] import code provided, generating bootstrap file at $BOOTSTRAP_PATH"
-  python /usr/local/bin/easysms-import-code.py inspect \
+  "$PYTHON_BIN" /usr/local/bin/easysms-import-code.py inspect \
     --import-code "$IMPORT_CODE" \
     --output "$BOOTSTRAP_PATH"
 fi
@@ -34,7 +43,7 @@ fi
 if [ ! -f "$CONFIG_PATH" ]; then
   if [ -f "$BOOTSTRAP_PATH" ]; then
     echo "[easy-sms] runtime config missing, attempting bootstrap via $BOOTSTRAP_PATH"
-    python /usr/local/bin/bootstrap-service-config.py \
+    "$PYTHON_BIN" /usr/local/bin/bootstrap-service-config.py \
       --bootstrap-path "$BOOTSTRAP_PATH" \
       --config-path "$CONFIG_PATH" \
       --runtime-env-path "$RUNTIME_ENV_PATH" \
@@ -67,7 +76,7 @@ if [ -f "$RUNTIME_ENV_PATH" ]; then
 fi
 
 resolve_bootstrap_sync_setting() {
-  python - "$BOOTSTRAP_PATH" <<'PY'
+  "$PYTHON_BIN" - "$BOOTSTRAP_PATH" <<'PY'
 import json
 import pathlib
 import sys
@@ -107,7 +116,7 @@ start_sync_loop() {
   (
     while true; do
       sleep "$SYNC_INTERVAL_SECONDS"
-      python /usr/local/bin/bootstrap-service-config.py \
+      "$PYTHON_BIN" /usr/local/bin/bootstrap-service-config.py \
         --bootstrap-path "$BOOTSTRAP_PATH" \
         --config-path "$CONFIG_PATH" \
         --runtime-env-path "$RUNTIME_ENV_PATH" \

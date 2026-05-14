@@ -124,7 +124,7 @@ function Ensure-RepoRoot {
         }
         Expand-Archive -LiteralPath $archivePath -DestinationPath $expandedRoot -Force
 
-        $childRoots = Get-ChildItem -LiteralPath $expandedRoot -Directory
+        $childRoots = @(Get-ChildItem -LiteralPath $expandedRoot -Directory)
         if ($childRoots.Count -ne 1) {
             throw "Unexpected archive layout for $archiveUrlValue"
         }
@@ -191,35 +191,37 @@ if (
 }
 
 Write-Host "[deploy-host] invoking scripts/deploy-service-base.ps1" -ForegroundColor Cyan
-$args = @(
-    "-ConfigPath", $resolvedConfigPath,
-    "-Pull:$Pull",
-    "-NetworkName", $NetworkName,
-    "-NetworkAlias", $NetworkAlias
-)
+$deployParams = @{
+    ConfigPath = $resolvedConfigPath
+    NetworkName = $NetworkName
+    NetworkAlias = $NetworkAlias
+}
 if ($NoBuild) {
-    $args += "-NoBuild"
+    $deployParams.NoBuild = $true
+}
+if ($Pull) {
+    $deployParams.Pull = $true
 }
 if (-not [string]::IsNullOrWhiteSpace($Image)) {
-    $args += @("-Image", $Image)
+    $deployParams.Image = $Image
 }
 if (-not [string]::IsNullOrWhiteSpace($ImportCode)) {
-    $args += @("-ImportCode", $ImportCode)
+    $deployParams.ImportCode = $ImportCode
 }
 if (-not [string]::IsNullOrWhiteSpace($BootstrapFile)) {
-    $args += @("-BootstrapFile", $BootstrapFile)
+    $deployParams.BootstrapFile = $BootstrapFile
 }
 if (-not [string]::IsNullOrWhiteSpace($InstanceName)) {
-    $args += @("-InstanceName", $InstanceName)
+    $deployParams.InstanceName = $InstanceName
 }
 if (-not [string]::IsNullOrWhiteSpace($ContainerName)) {
-    $args += @("-ContainerName", $ContainerName)
+    $deployParams.ContainerName = $ContainerName
 }
 if ($HostPort -gt 0) {
-    $args += @("-HostPort", $HostPort)
+    $deployParams.HostPort = $HostPort
 }
 if (-not [string]::IsNullOrWhiteSpace($ComposeProjectName)) {
-    $args += @("-ComposeProjectName", $ComposeProjectName)
+    $deployParams.ComposeProjectName = $ComposeProjectName
 }
 
-& $deployScript @args
+& $deployScript @deployParams

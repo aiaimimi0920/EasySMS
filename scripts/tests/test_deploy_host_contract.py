@@ -42,6 +42,19 @@ class DeployHostContractTests(unittest.TestCase):
         self.assertIn("$Image", script)
         self.assertIn("$effectiveConfigPath", script)
 
+    def test_archive_bootstrap_wraps_child_roots_as_array(self) -> None:
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("$childRoots = @(Get-ChildItem -LiteralPath $expandedRoot -Directory)", script)
+
+    def test_deploy_host_uses_explicit_pull_switch_instead_of_stringified_boolean(self) -> None:
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+
+        self.assertNotIn('"-Pull:$Pull"', script)
+        self.assertIn("if ($Pull) {", script)
+        self.assertIn("$deployParams.Pull = $true", script)
+        self.assertIn("& $deployScript @deployParams", script)
+
 
 if __name__ == "__main__":
     unittest.main()
