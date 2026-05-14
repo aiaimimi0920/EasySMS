@@ -1,6 +1,5 @@
 param(
-    [Parameter(Mandatory = $true)]
-    [long]$RunId,
+    [long]$RunId = 0,
     [string]$ReleaseTag = '',
     [string]$RepoOwner = 'aiaimimi0920',
     [string]$RepoName = 'EasySMS',
@@ -131,6 +130,33 @@ function Assert-SameStringSet {
     }
 }
 
+function Find-LatestSuccessfulPublishRun {
+    param(
+        [string]$RepoOwner,
+        [string]$RepoName,
+        [string]$Token,
+        [string]$RequestedReleaseTag = ''
+    )
+
+    $workflowFile = 'publish-service-base-ghcr.yml'
+    $runs = Invoke-GitHubApiJson -Uri "https://api.github.com/repos/$RepoOwner/$RepoName/actions/workflows/$workflowFile/runs?per_page=50" -Token $Token
+    $candidate = @($runs.workflow_runs | Where-Object {
+        $_.name -eq 'Publish Service Base GHCR' `
+        -and $_.status -eq 'completed' `
+        -and $_.conclusion -eq 'success' `
+        -and ([string]::IsNullOrWhiteSpace($RequestedReleaseTag) -or $_.head_branch -eq $RequestedReleaseTag)
+    }) | Select-Object -First 1
+
+    if ($null -eq $candidate) {
+        if ([string]::IsNullOrWhiteSpace($RequestedReleaseTag)) {
+            throw 'Could not find a successful completed "Publish Service Base GHCR" run.'
+        }
+        throw ('Could not find a successful completed "Publish Service Base GHCR" run for release tag {0}.' -f $RequestedReleaseTag)
+    }
+
+    return $candidate
+}
+
 $repoRoot = Get-EasySmsRepoRoot
 $token = Get-EffectiveGitHubToken -ExplicitToken $GitHubToken
 $resolvedPrivateKeyPath = Resolve-OptionalPath -PathValue $PrivateKeyPath
@@ -138,11 +164,17 @@ if ([string]::IsNullOrWhiteSpace($resolvedPrivateKeyPath)) {
     throw 'PrivateKeyPath is required. Pass -PrivateKeyPath or extend this script with your preferred secret source.'
 }
 
-$runUri = "https://api.github.com/repos/$RepoOwner/$RepoName/actions/runs/$RunId"
-$run = Invoke-GitHubApiJson -Uri $runUri -Token $token
-if ($run.status -ne 'completed' -or $run.conclusion -ne 'success') {
-    throw "Workflow run $RunId is not a successful completed run. status=$($run.status) conclusion=$($run.conclusion)"
+$run = if ($RunId -gt 0) {
+    $resolvedRun = Invoke-GitHubApiJson -Uri "https://api.github.com/repos/$RepoOwner/$RepoName/actions/runs/$RunId" -Token $token
+    if ($resolvedRun.status -ne 'completed' -or $resolvedRun.conclusion -ne 'success') {
+        throw "Workflow run $RunId is not a successful completed run. status=$($resolvedRun.status) conclusion=$($resolvedRun.conclusion)"
+    }
+    $resolvedRun
+} else {
+    Find-LatestSuccessfulPublishRun -RepoOwner $RepoOwner -RepoName $RepoName -Token $token -RequestedReleaseTag $ReleaseTag
 }
+$effectiveRunId = [long]$run.id
+$runUri = "https://api.github.com/repos/$RepoOwner/$RepoName/actions/runs/$effectiveRunId"
 
 $effectiveReleaseTag = if (-not [string]::IsNullOrWhiteSpace($ReleaseTag)) {
     $ReleaseTag
@@ -160,7 +192,7 @@ $effectiveImage = if (-not [string]::IsNullOrWhiteSpace($Image)) {
 }
 
 $workRoot = if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
-    Join-Path $repoRoot ".tmp\blank-host-release-smoke\$RunId"
+    Join-Path $repoRoot ".tmp\blank-host-release-smoke\$effectiveRunId"
 } else {
     Resolve-EasySmsPath -Path $WorkRoot
 }
@@ -170,7 +202,7 @@ $deployHostSource = if ([string]::IsNullOrWhiteSpace($DeployHostSourcePath)) {
     Resolve-EasySmsPath -Path $DeployHostSourcePath
 }
 
-$effectiveInstanceName = if (-not [string]::IsNullOrWhiteSpace($InstanceName)) { $InstanceName } else { "blankhost-smoke-$RunId" }
+$effectiveInstanceName = if (-not [string]::IsNullOrWhiteSpace($InstanceName)) { $InstanceName } else { "blankhost-smoke-$effectiveRunId" }
 $effectiveContainerName = if (-not [string]::IsNullOrWhiteSpace($ContainerName)) { $ContainerName } else { "easy-sms-$effectiveInstanceName" }
 $effectiveComposeProjectName = if (-not [string]::IsNullOrWhiteSpace($ComposeProjectName)) { $ComposeProjectName } else { "easy-sms-$effectiveInstanceName" }
 
@@ -179,8 +211,8 @@ if (Test-Path -LiteralPath $workRoot) {
 }
 New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
 
-$artifactZipPath = Join-Path $workRoot "$ArtifactName-$RunId.zip"
-$artifactDir = Join-Path $workRoot "$ArtifactName-$RunId"
+$artifactZipPath = Join-Path $workRoot "$ArtifactName-$effectiveRunId.zip"
+$artifactDir = Join-Path $workRoot "$ArtifactName-$effectiveRunId"
 $importCodePath = Join-Path $workRoot "service-base-import-code.txt"
 $deployWorkDir = Join-Path $workRoot 'host'
 $deployHostPath = Join-Path $deployWorkDir 'deploy-host.ps1'
@@ -189,7 +221,7 @@ try {
     $artifacts = Invoke-GitHubApiJson -Uri "$runUri/artifacts" -Token $token
     $artifact = @($artifacts.artifacts | Where-Object { $_.name -eq $ArtifactName }) | Select-Object -First 1
     if ($null -eq $artifact) {
-        throw "Artifact '$ArtifactName' was not found for workflow run $RunId."
+        throw "Artifact '$ArtifactName' was not found for workflow run $effectiveRunId."
     }
 
     Download-GitHubArtifactZip -Uri "https://api.github.com/repos/$RepoOwner/$RepoName/actions/artifacts/$($artifact.id)/zip" -Token $token -OutputPath $artifactZipPath
@@ -271,7 +303,7 @@ try {
     }
 
     [pscustomobject]@{
-        runId = $RunId
+        runId = $effectiveRunId
         releaseTag = $effectiveReleaseTag
         image = $effectiveImage
         hostPort = $HostPort

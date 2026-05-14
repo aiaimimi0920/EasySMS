@@ -26,6 +26,19 @@ class BlankHostReleaseSmokeContractTests(unittest.TestCase):
         self.assertIn("docker ps -a --format '{{.Names}}'", script)
         self.assertIn("docker rm -f $effectiveContainerName", script)
 
+    def test_helper_can_resolve_latest_successful_publish_run_when_run_id_is_omitted(self) -> None:
+        script = HELPER_PATH.read_text(encoding="utf-8")
+
+        self.assertNotIn("[Parameter(Mandatory = $true)]\n    [long]$RunId", script)
+        self.assertIn("[long]$RunId = 0", script)
+        self.assertIn("function Find-LatestSuccessfulPublishRun", script)
+        self.assertIn("publish-service-base-ghcr.yml", script)
+        self.assertIn("Publish Service Base GHCR", script)
+        self.assertIn("/actions/workflows/", script)
+        self.assertIn("/runs?per_page=", script)
+        self.assertIn("$_.conclusion -eq 'success'", script)
+        self.assertIn("$_.head_branch -eq $RequestedReleaseTag", script)
+
     def test_decrypt_import_code_helper_exists_and_wraps_easysms_import_code(self) -> None:
         script = DECRYPT_HELPER_PATH.read_text(encoding="utf-8")
 
