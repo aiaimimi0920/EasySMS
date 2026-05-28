@@ -154,6 +154,10 @@ interface HeroSmsSelectionStats {
   lastFailureAtIso?: string;
 }
 
+interface GetInboxRuntimeOptions {
+  ignoreAvailabilityIssue?: boolean;
+}
+
 interface HeroSmsPaidLeaseRecord {
   upstreamActivationId: number;
   phoneNumber: string;
@@ -2362,7 +2366,7 @@ export class EasySmsService {
     return finalResult;
   }
 
-  async getInbox(options: GetInboxOptions): Promise<SmsInboxSnapshot> {
+  async getInbox(options: GetInboxOptions, runtimeOptions: GetInboxRuntimeOptions = {}): Promise<SmsInboxSnapshot> {
     const provider = this.providers.get(options.providerKey);
     if (!provider) {
       throw new ProviderNotFoundError(options.providerKey);
@@ -2377,9 +2381,11 @@ export class EasySmsService {
 
     const reference = this.requireIssuedNumberReference(options.numberId);
     const context = this.buildInboxRouteContext(provider, reference);
-    const availabilityIssue = this.operationalState.getAvailabilityIssue(context);
-    if (availabilityIssue) {
-      throw new ProviderRouteUnavailableError(options.providerKey, availabilityIssue.reason);
+    if (!runtimeOptions.ignoreAvailabilityIssue) {
+      const availabilityIssue = this.operationalState.getAvailabilityIssue(context);
+      if (availabilityIssue) {
+        throw new ProviderRouteUnavailableError(options.providerKey, availabilityIssue.reason);
+      }
     }
 
     try {
@@ -2977,10 +2983,13 @@ export class EasySmsService {
 
   private async collectProviderMessagesForSession(session: EasySmsManagedSessionSnapshot): Promise<SmsSessionMessage[]> {
     if (session.sessionMode === "synthetic-public-inbox" && session.numberId) {
-      const inbox = await this.getInbox({
-        providerKey: session.providerKey,
-        numberId: session.numberId,
-      });
+      const inbox = await this.getInbox(
+        {
+          providerKey: session.providerKey,
+          numberId: session.numberId,
+        },
+        { ignoreAvailabilityIssue: true },
+      );
       return inbox.messages.map((message) => ({
         id: `${session.id}:provider:${message.id}`,
         sessionId: session.id,
@@ -3193,10 +3202,13 @@ export class EasySmsService {
       };
     }
 
-    const inbox = await this.getInbox({
-      providerKey: session.providerKey,
-      numberId: session.numberId,
-    });
+    const inbox = await this.getInbox(
+      {
+        providerKey: session.providerKey,
+        numberId: session.numberId,
+      },
+      { ignoreAvailabilityIssue: true },
+    );
     const latestOtpMessage = findLatestOtpMessage(inbox.messages);
     const code = extractOtpCode(latestOtpMessage);
     const baselineFingerprint = [

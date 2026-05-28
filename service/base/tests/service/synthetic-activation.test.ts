@@ -164,6 +164,43 @@ describe("EasySms synthetic activation facade", () => {
     expect(provider.inboxCallCount).toBe(1);
   });
 
+  it("continues polling an already-open synthetic session when the provider inbox route is cooling", async () => {
+    const provider = new SyntheticProvider();
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    const session = await service.openSession({ service: "otp" });
+    service.operationalState.recordRouteFailure(
+      {
+        providerKey: "onlinesim",
+        providerDisplayName: "OnlineSIM Free Numbers",
+        routeKind: "read-public-inbox",
+        scopeKind: "country",
+        scopeValue: "+1",
+      },
+      new Error("Cloudflare challenge page"),
+      new Date(),
+    );
+
+    expect(service.operationalState.getAvailabilityIssue(
+      {
+        providerKey: "onlinesim",
+        providerDisplayName: "OnlineSIM Free Numbers",
+        routeKind: "read-public-inbox",
+        scopeKind: "country",
+        scopeValue: "+1",
+      },
+    )?.status).toBe("cooling");
+
+    await expect(service.listSessionMessages(session.id)).resolves.toEqual([
+      expect.objectContaining({
+        providerKey: "onlinesim",
+        sourceType: "provider-inbox",
+        code: "123456",
+      }),
+    ]);
+    expect(provider.inboxCallCount).toBe(1);
+  });
+
   it("keeps admin-style message queries cache-first unless refreshProjected is explicitly requested", async () => {
     const provider = new SyntheticProvider();
     const service = new EasySmsService(createConfig(), [provider]);
