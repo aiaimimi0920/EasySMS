@@ -1,0 +1,34 @@
+{
+    "schemaVersion":  1,
+    "project":  "EasySms",
+    "releaseClass":  "standard-service-base",
+    "workflows":  [
+                      {
+                          "component":  "service-base",
+                          "requiresImportCode":  true,
+                          "releaseTagOutputs":  [
+                                                    "release_tag",
+                                                    "version"
+                                                ],
+                          "artifacts":  [
+                                            "service-base-r2-config-manifest",
+                                            "service-base-import-code-encrypted"
+                                        ],
+                          "releaseTagInputs":  [
+                                                   "release_tag",
+                                                   "version"
+                                               ],
+                          "requiresR2":  true,
+                          "path":  ".github/workflows/publish-service-base-ghcr.yml",
+                          "requiresGhcr":  true
+                      }
+                  ],
+    "localDeploy":  {
+                        "entrypoint":  "deploy-host.ps1",
+                        "zeroFolder":  true,
+                        "forbidDevSourceBindMounts":  true
+                    },
+    "exceptions":  [
+                       "Provider-specific smoke tests remain project-specific."
+                   ]
+}

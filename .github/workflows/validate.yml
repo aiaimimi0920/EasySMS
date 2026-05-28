@@ -36,6 +36,10 @@ jobs:
         shell: pwsh
         run: .\scripts\test-all.ps1
 
+      - name: Validate Release Contract
+        shell: pwsh
+        run: python scripts/validate-release-contract.py
+
   docker-smoke:
     runs-on: ubuntu-latest
 
