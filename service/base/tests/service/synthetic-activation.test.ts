@@ -216,6 +216,20 @@ describe("EasySms synthetic activation facade", () => {
     expect(provider.listLimits.some((limit) => limit > 1)).toBe(true);
   });
 
+  it("does not reacquire public numbers whose local synthetic lease is already at capacity", async () => {
+    const firstNumber = createPublicNumber("+12025550123", 1);
+    const secondNumber = createPublicNumber("+12025550124", 2);
+    const provider = new MultiNumberSyntheticProvider([firstNumber, secondNumber]);
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    const firstSession = await service.openSession({ service: "otp" });
+    expect(firstSession.phoneNumber).toBe(firstNumber.phoneNumber);
+
+    const secondSession = await service.openSession({ service: "otp" });
+    expect(secondSession.phoneNumber).toBe(secondNumber.phoneNumber);
+    expect(secondSession.numberId).toBe(secondNumber.numberId);
+  });
+
   it("queries a unified message view that includes projected provider messages by default", async () => {
     const provider = new SyntheticProvider();
     const service = new EasySmsService(createConfig(), [provider]);
@@ -363,7 +377,7 @@ describe("EasySms synthetic activation facade", () => {
     const provider = new SyntheticProvider();
     const service = new EasySmsService(createConfig(), [provider]);
 
-    const session = await service.openSession({ service: "otp" });
+    const session = await service.openSession({ service: "otp", maxBindingsPerPhone: 2 });
 
     expect(service.querySessions({ hasCode: true })).toEqual([]);
 
@@ -384,7 +398,7 @@ describe("EasySms synthetic activation facade", () => {
     const provider = new SyntheticProvider();
     const service = new EasySmsService(createConfig(), [provider]);
 
-    const firstSession = await service.openSession({ service: "otp" });
+    const firstSession = await service.openSession({ service: "otp", maxBindingsPerPhone: 2 });
     const secondSession = await service.openSession({ service: "otp" });
 
     const fixedIso = "2026-05-12T12:00:00.000Z";
