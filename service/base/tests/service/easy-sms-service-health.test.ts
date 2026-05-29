@@ -325,6 +325,57 @@ describe("EasySmsService health integration", () => {
     expect(calls).toEqual(["onlinesim", "receive_smss"]);
   });
 
+  it("does not call providers whose list candidate is unavailable due to an empty public pool", async () => {
+    const calls: string[] = [];
+    const config = {
+      ...createConfig(),
+      strategy: {
+        ...createConfig().strategy,
+        providerStrategyModeId: "weighted-fallback",
+      },
+    };
+
+    const service = new EasySmsService(
+      config,
+      [
+        new FakeSmsProvider(
+          createDescriptor(),
+          async () => {
+            calls.push("onlinesim");
+            return [];
+          },
+          async () => ({
+            providerKey: "onlinesim",
+            providerDisplayName: "Fake Provider",
+            numberId: "unused",
+            phoneNumber: "+10000000000",
+            sourceUrl: "https://example.com/unused",
+            fetchedAtIso: new Date().toISOString(),
+            messages: [],
+          }),
+        ),
+      ],
+    );
+
+    service.operationalState.recordRouteSuccess({
+      providerKey: "onlinesim",
+      providerDisplayName: "Fake Provider",
+      routeKind: "list-public-numbers",
+      scopeKind: "provider",
+      scopeValue: "global",
+    }, {
+      detail: "recent empty",
+      isEmpty: true,
+      now: new Date("2026-04-05T16:00:00.000Z"),
+    });
+
+    const result = await service.listPublicNumbers({ limit: 1 });
+
+    expect(result.items).toEqual([]);
+    expect(result.errors).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
   it("uses probe trend penalties to demote unstable providers", () => {
     const firstDescriptor = {
       ...createDescriptor(),

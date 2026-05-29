@@ -2578,6 +2578,7 @@ export class EasySmsService {
 
     const ranked = this.getListSelectionPlan(options, now);
     return ranked
+      .filter((candidate) => candidate.healthState !== "empty")
       .map((candidate) => ({
         candidate,
         provider: this.providers.get(candidate.providerKey),

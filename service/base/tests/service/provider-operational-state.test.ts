@@ -107,4 +107,29 @@ describe("EasySmsProviderOperationalState", () => {
     expect(trend?.successCount).toBe(1);
     expect(trend?.trendPenalty).toBeGreaterThan(0);
   });
+
+  it("marks empty list candidates unavailable without provider-specific rules", () => {
+    const state = new EasySmsProviderOperationalState([descriptor]);
+    const context = {
+      providerKey: descriptor.key,
+      providerDisplayName: descriptor.displayName,
+      routeKind: "list-public-numbers" as const,
+      scopeKind: "provider" as const,
+      scopeValue: "global",
+    };
+
+    state.recordRouteSuccess(context, {
+      detail: "Provider responded but returned no public numbers.",
+      itemCount: 0,
+      isEmpty: true,
+      now: new Date("2026-04-05T13:00:00.000Z"),
+    });
+
+    const candidate = state.getSelectionCandidate(context, new Date("2026-04-05T13:01:00.000Z"));
+
+    expect(candidate.healthState).toBe("empty");
+    expect(candidate.available).toBe(false);
+    expect(candidate.availabilityIssue).toContain("empty public number");
+    expect(candidate.emptyPenalty).toBeGreaterThanOrEqual(80);
+  });
 });
