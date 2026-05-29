@@ -72,6 +72,62 @@ class SyntheticProvider implements SmsProvider {
   }
 }
 
+class MultiNumberSyntheticProvider implements SmsProvider {
+  readonly listLimits: number[] = [];
+
+  readonly descriptor: ProviderDescriptor = {
+    key: "onlinesim",
+    displayName: "OnlineSIM Free Numbers",
+    homepageUrl: "https://example.com/onlinesim",
+    sourceType: "public-web-scrape",
+    costTier: "free",
+    capabilities: ["list-public-numbers", "read-public-inbox"],
+    enabled: true,
+    countryHints: ["US"],
+    notes: [],
+  };
+
+  public constructor(private readonly numbers: SmsPublicNumber[]) {}
+
+  async listPublicNumbers(options: ListPublicNumbersOptions): Promise<SmsPublicNumber[]> {
+    this.listLimits.push(options.limit ?? 0);
+    return this.numbers.slice(0, options.limit ?? this.numbers.length);
+  }
+
+  async getInbox(numberId: string): Promise<SmsInboxSnapshot> {
+    const matched = this.numbers.find((number) => number.numberId === numberId) ?? this.numbers[0]!;
+    return {
+      providerKey: matched.providerKey,
+      providerDisplayName: matched.providerDisplayName,
+      numberId,
+      phoneNumber: matched.phoneNumber,
+      sourceUrl: matched.sourceUrl,
+      countryCode: matched.countryCode,
+      countryName: matched.countryName,
+      fetchedAtIso: "2026-05-12T12:00:00.000Z",
+      messages: [],
+    };
+  }
+}
+
+function createPublicNumber(phoneNumber: string, sourceIndex: number): SmsPublicNumber {
+  return {
+    providerKey: "onlinesim",
+    providerDisplayName: "OnlineSIM Free Numbers",
+    numberId: encodeNumberId({
+      providerKey: "onlinesim",
+      sourceUrl: `https://example.com/number/${sourceIndex}`,
+      phoneNumber,
+      countryCode: "+1",
+      countryName: "United States",
+    }),
+    sourceUrl: `https://example.com/number/${sourceIndex}`,
+    phoneNumber,
+    countryCode: "+1",
+    countryName: "United States",
+  };
+}
+
 function createConfig(heroEnabled = false): EasySmsRuntimeConfig {
   return {
     ...defaultEasySmsRuntimeConfig,
@@ -133,6 +189,31 @@ describe("EasySms synthetic activation facade", () => {
 
     const health = service.listProviderHealth().find((item) => item.providerKey === "onlinesim");
     expect(health?.consecutiveFailures).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not reopen synthetic sessions on public numbers rejected by a prior outcome", async () => {
+    const rejectedNumber = createPublicNumber("+12025550123", 1);
+    const usableNumber = createPublicNumber("+12025550124", 2);
+    const provider = new MultiNumberSyntheticProvider([rejectedNumber, usableNumber]);
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    const firstSession = await service.openSession({ service: "otp" });
+    expect(firstSession.phoneNumber).toBe(rejectedNumber.phoneNumber);
+
+    service.reportSessionOutcome({
+      sessionId: firstSession.id,
+      success: false,
+      failureReason: "provider_rejected_phone",
+      detail: "blacklisted_phone_number",
+    });
+
+    const listed = await service.listPublicNumbers({ providerKey: "onlinesim", limit: 2 });
+    expect(listed.items.map((item) => item.phoneNumber)).toEqual([usableNumber.phoneNumber]);
+
+    const secondSession = await service.openSession({ service: "otp" });
+    expect(secondSession.phoneNumber).toBe(usableNumber.phoneNumber);
+    expect(secondSession.numberId).toBe(usableNumber.numberId);
+    expect(provider.listLimits.some((limit) => limit > 1)).toBe(true);
   });
 
   it("queries a unified message view that includes projected provider messages by default", async () => {

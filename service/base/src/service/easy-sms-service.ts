@@ -132,6 +132,46 @@ function normalizePhoneNumberForLookup(phoneNumber: string | undefined): string 
   return String(phoneNumber ?? "").replace(/[^\d+]/g, "");
 }
 
+function buildPhoneNumberLookupKeys(phoneNumber: string | undefined): Set<string> {
+  const normalized = normalizePhoneNumberForLookup(phoneNumber);
+  const digitsOnly = normalized.replace(/\D/g, "");
+  return new Set([normalized, digitsOnly, digitsOnly ? `+${digitsOnly}` : ""].filter(Boolean));
+}
+
+function hasAnyPhoneNumberLookupKey(left: Set<string>, right: Set<string>): boolean {
+  for (const key of left) {
+    if (right.has(key)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isPhoneScopedTerminalOutcome(report: SmsSessionOutcomeReport | undefined): boolean {
+  if (!report || report.success) {
+    return false;
+  }
+
+  const outcomeText = [report.failureReason, report.detail]
+    .map((value) => normalizeText(value).toLowerCase().replace(/[\s-]+/g, "_"))
+    .filter(Boolean)
+    .join(" ");
+
+  return [
+    "blacklisted_phone_number",
+    "phone_number_in_use",
+    "phone_max_usage_exceeded",
+    "phone_max_usage",
+    "phone_rate_limit_exceeded",
+    "invalid_phone_number",
+    "phone_not_allowed",
+    "phone_blocked",
+    "number_rejected",
+    "rate_limit_exceeded",
+    "too_many_attempts",
+  ].some((marker) => outcomeText.includes(marker));
+}
+
 interface SyntheticCountryProjection {
   providerKey: ProviderDescriptor["key"];
   countryId: number;
@@ -950,6 +990,7 @@ export class EasySmsService {
       .filter((lease) => !wantedCountryName || normalizeText(lease.countryName).toLowerCase().includes(wantedCountryName))
       .filter((lease) => !wantedOperator || lease.operator === wantedOperator)
       .filter((lease) => lease.logicalActivationIds.length < Math.max(1, lease.maxBindingsPerPhone))
+      .filter((lease) => !this.isPhoneOrNumberRejectedByOutcome(lease.phoneNumber, lease.numberId))
       .sort((left, right) => Date.parse(left.openedAtIso) - Date.parse(right.openedAtIso))[0];
   }
 
@@ -1958,6 +1999,34 @@ export class EasySmsService {
     }
   }
 
+  private isPublicNumberRejectedByOutcome(number: SmsPublicNumber): boolean {
+    return this.isPhoneOrNumberRejectedByOutcome(number.phoneNumber, number.numberId);
+  }
+
+  private isPhoneOrNumberRejectedByOutcome(phoneNumber: string | undefined, numberId?: string): boolean {
+    const lookupKeys = buildPhoneNumberLookupKeys(phoneNumber);
+    if (lookupKeys.size === 0 && !numberId) {
+      return false;
+    }
+
+    return Array.from(this.managedSessions.values()).some((session) => {
+      if (!isPhoneScopedTerminalOutcome(session.lastReportedOutcome)) {
+        return false;
+      }
+      if (numberId && session.numberId === numberId) {
+        return true;
+      }
+      if (lookupKeys.size === 0) {
+        return false;
+      }
+      return hasAnyPhoneNumberLookupKey(lookupKeys, buildPhoneNumberLookupKeys(session.phoneNumber));
+    });
+  }
+
+  private filterRejectedPublicNumbers(numbers: SmsPublicNumber[]): SmsPublicNumber[] {
+    return numbers.filter((number) => !this.isPublicNumberRejectedByOutcome(number));
+  }
+
   private requireIssuedNumberReference(numberId: string): SmsNumberReference {
     const reference = this.issuedNumbers.get(numberId);
     if (!reference) {
@@ -2310,16 +2379,19 @@ export class EasySmsService {
               ...options,
               limit: providerLimit,
             });
+            const usableProviderItems = this.filterRejectedPublicNumbers(providerItems);
             this.operationalState.recordRouteSuccess(context, {
-              detail: providerItems.length > 0
-                ? `Retrieved ${providerItems.length} public numbers.`
+              detail: usableProviderItems.length > 0
+                ? `Retrieved ${usableProviderItems.length} usable public numbers.`
+                : providerItems.length > 0
+                  ? "Provider returned only previously rejected public numbers."
                 : "Provider responded but returned no public numbers.",
-              itemCount: providerItems.length,
-              isEmpty: providerItems.length === 0,
+              itemCount: usableProviderItems.length,
+              isEmpty: usableProviderItems.length === 0,
             });
             return {
               providerKey: provider.descriptor.key,
-              items: providerItems,
+              items: usableProviderItems,
               candidate,
             };
           } catch (error) {
@@ -3131,23 +3203,26 @@ export class EasySmsService {
       try {
         const items = await provider.listPublicNumbers({
           providerKey: provider.descriptor.key,
-          limit: 1,
+          limit: this.config.scraping.maxNumbersPerProvider,
           countryCode: input.countryCode,
           countryName: input.countryName,
           costTier: "free",
         });
+        const usableItems = this.filterRejectedPublicNumbers(items);
         this.operationalState.recordRouteSuccess(context, {
-          detail: items.length > 0
+          detail: usableItems.length > 0
             ? "Synthetic activation selected a public number."
+            : items.length > 0
+              ? "Synthetic activation found only previously rejected public numbers on this provider."
             : "Synthetic activation found no public numbers on this provider.",
-          itemCount: items.length,
-          isEmpty: items.length === 0,
+          itemCount: usableItems.length,
+          isEmpty: usableItems.length === 0,
         });
-        if (items.length > 0) {
-          this.rememberIssuedPublicNumbers(items);
+        if (usableItems.length > 0) {
+          this.rememberIssuedPublicNumbers(usableItems);
           return {
             provider,
-            number: items[0],
+            number: usableItems[0],
           };
         }
       } catch (error) {
