@@ -54,6 +54,10 @@ export const defaultEasySmsRuntimeConfig: EasySmsRuntimeConfig = {
       email: "",
       password: "",
     },
+    synthetic: {
+      leaseWindowSeconds: 20 * 60,
+      terminalOutcomeCooldownSeconds: 2 * 60 * 60,
+    },
     heroSms: {
       enabled: false,
       apiKey: "",

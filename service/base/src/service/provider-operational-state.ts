@@ -496,10 +496,10 @@ export class EasySmsProviderOperationalState {
       deriveErrorClassPenalty(exactRoute?.lastErrorClass),
       deriveErrorClassPenalty(providerRoute?.lastErrorClass),
     );
-    const emptyAvailabilityIssue = provider.healthState === "empty" && context.routeKind === "list-public-numbers"
+    const emptyDirectoryNote = provider.healthState === "empty" && context.routeKind === "list-public-numbers"
       ? `${provider.providerDisplayName} has a recent empty public number pool.`
       : undefined;
-    const emptyPenalty = emptyAvailabilityIssue ? 85 : 0;
+    const emptyPenalty = emptyDirectoryNote ? 85 : 0;
     const statusPenalty = deriveStatusPenalty(provider.status, provider.healthState);
     const trend = this.buildProbeTrendSnapshot(context.providerKey, now);
     const trendPenalty = trend?.trendPenalty ?? 0;
@@ -514,10 +514,13 @@ export class EasySmsProviderOperationalState {
       - provider.consecutiveFailures * 2;
     const notes: string[] = [];
 
-    const effectiveAvailabilityIssue = availabilityIssue?.reason ?? emptyAvailabilityIssue;
+    const effectiveAvailabilityIssue = availabilityIssue?.reason;
 
     if (effectiveAvailabilityIssue) {
       notes.push(effectiveAvailabilityIssue);
+    }
+    if (emptyDirectoryNote) {
+      notes.push(emptyDirectoryNote);
     }
     if (exactRoutePenalty > 0) {
       notes.push(`exact route penalty=${exactRoutePenalty}`);
@@ -544,7 +547,7 @@ export class EasySmsProviderOperationalState {
       providerStatus: provider.status,
       healthState: provider.healthState,
       healthScore: provider.healthScore,
-      available: effectiveAvailabilityIssue === undefined,
+      available: availabilityIssue === undefined,
       availabilityIssue: effectiveAvailabilityIssue,
       exactRoutePenalty,
       providerRoutePenalty,

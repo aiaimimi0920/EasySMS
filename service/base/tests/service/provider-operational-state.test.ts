@@ -108,7 +108,7 @@ describe("EasySmsProviderOperationalState", () => {
     expect(trend?.trendPenalty).toBeGreaterThan(0);
   });
 
-  it("marks empty list candidates unavailable without provider-specific rules", () => {
+  it("keeps empty list candidates available with a penalty", () => {
     const state = new EasySmsProviderOperationalState([descriptor]);
     const context = {
       providerKey: descriptor.key,
@@ -128,8 +128,11 @@ describe("EasySmsProviderOperationalState", () => {
     const candidate = state.getSelectionCandidate(context, new Date("2026-04-05T13:01:00.000Z"));
 
     expect(candidate.healthState).toBe("empty");
-    expect(candidate.available).toBe(false);
-    expect(candidate.availabilityIssue).toContain("empty public number");
+    expect(candidate.available).toBe(true);
+    expect(candidate.availabilityIssue).toBeUndefined();
     expect(candidate.emptyPenalty).toBeGreaterThanOrEqual(80);
+    expect(candidate.notes).toEqual(expect.arrayContaining([
+      expect.stringContaining("empty public number"),
+    ]));
   });
 });

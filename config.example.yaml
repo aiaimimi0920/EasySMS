@@ -97,6 +97,11 @@ serviceBase:
       receiveSmsFreeCc:
         email: ""
         password: ""
+      synthetic:
+        # Free public-inbox leases are only local reservations; expire them so
+        # abandoned sessions do not drain the small public pools forever.
+        leaseWindowSeconds: 1200
+        terminalOutcomeCooldownSeconds: 7200
       heroSms:
         enabled: false
         apiKey: ""

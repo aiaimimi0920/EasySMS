@@ -60,4 +60,20 @@ describe("runtime config merge", () => {
       leaseWindowSeconds: 1200,
     });
   });
+
+  it("merges synthetic public-inbox lease and outcome cooldown settings from config", () => {
+    const config = mergeEasySmsConfig({
+      providers: {
+        synthetic: {
+          leaseWindowSeconds: 900,
+          terminalOutcomeCooldownSeconds: 1800,
+        },
+      },
+    });
+
+    expect(config.providers.synthetic).toEqual({
+      leaseWindowSeconds: 900,
+      terminalOutcomeCooldownSeconds: 1800,
+    });
+  });
 });

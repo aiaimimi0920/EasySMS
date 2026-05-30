@@ -46,6 +46,11 @@ providers:
   receiveSmsFreeCc:
     email: ""
     password: ""
+  synthetic:
+    # Free public-inbox leases are only local reservations; expire them so the
+    # small public pools are not drained forever by abandoned sessions.
+    leaseWindowSeconds: 1200
+    terminalOutcomeCooldownSeconds: 7200
   heroSms:
     enabled: false
     # apiKey: "replace-with-herosms-api-key"

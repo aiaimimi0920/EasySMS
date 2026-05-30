@@ -45,6 +45,8 @@ For list-style secrets, this repository accepts either:
 | `EASYSMS_PROVIDER_RECEIVE_SMSS_PASSWORD` | `providers.receiveSmss.password` |
 | `EASYSMS_PROVIDER_RECEIVE_SMS_FREE_CC_EMAIL` | `providers.receiveSmsFreeCc.email` |
 | `EASYSMS_PROVIDER_RECEIVE_SMS_FREE_CC_PASSWORD` | `providers.receiveSmsFreeCc.password` |
+| `EASYSMS_PROVIDER_SYNTHETIC_LEASE_WINDOW_SECONDS` | `providers.synthetic.leaseWindowSeconds` |
+| `EASYSMS_PROVIDER_SYNTHETIC_TERMINAL_OUTCOME_COOLDOWN_SECONDS` | `providers.synthetic.terminalOutcomeCooldownSeconds` |
 | `EASYSMS_PROVIDER_HERO_SMS_ENABLED` | `providers.heroSms.enabled` |
 | `EASYSMS_PROVIDER_HERO_SMS_API_KEY` | `providers.heroSms.apiKey` |
 | `EASYSMS_PROVIDER_HERO_SMS_BASE_URL` | `providers.heroSms.baseUrl` |

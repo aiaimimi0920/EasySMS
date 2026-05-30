@@ -35,6 +35,7 @@ export function mergeEasySmsConfig(input: unknown): EasySmsRuntimeConfig {
   const smsToMe = asRecord(providers.smsToMe);
   const receiveSmss = asRecord(providers.receiveSmss);
   const receiveSmsFreeCc = asRecord(providers.receiveSmsFreeCc);
+  const synthetic = asRecord(providers.synthetic);
   const heroSms = asRecord(providers.heroSms);
 
   return {
@@ -127,6 +128,16 @@ export function mergeEasySmsConfig(input: unknown): EasySmsRuntimeConfig {
         password: typeof receiveSmsFreeCc.password === "string"
           ? receiveSmsFreeCc.password
           : defaultEasySmsRuntimeConfig.providers.receiveSmsFreeCc.password,
+      },
+      synthetic: {
+        leaseWindowSeconds: asNumber(
+          synthetic.leaseWindowSeconds,
+          defaultEasySmsRuntimeConfig.providers.synthetic.leaseWindowSeconds,
+        ),
+        terminalOutcomeCooldownSeconds: asNumber(
+          synthetic.terminalOutcomeCooldownSeconds,
+          defaultEasySmsRuntimeConfig.providers.synthetic.terminalOutcomeCooldownSeconds,
+        ),
       },
       heroSms: {
         enabled: asBoolean(

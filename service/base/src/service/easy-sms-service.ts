@@ -232,6 +232,7 @@ interface SyntheticActivationLeaseRecord {
   businessKey: string;
   maxBindingsPerPhone: number;
   openedAtIso: string;
+  leaseExpiresAtIso?: string;
   logicalActivationIds: number[];
 }
 
@@ -979,6 +980,7 @@ export class EasySmsService {
     return Array.from(this.syntheticActivationLeasesByKey.values())
       .filter((lease) => lease.businessKey === businessKey)
       .filter((lease) => lease.service === service)
+      .filter((lease) => this.isSyntheticLeaseActive(lease))
       .filter((lease) => {
         const provider = this.providers.get(lease.providerKey);
         return Boolean(provider && this.supportsSyntheticActivation(provider.descriptor));
@@ -1051,6 +1053,7 @@ export class EasySmsService {
       assignmentIndex,
       maxBindingsPerPhone: lease.maxBindingsPerPhone,
       refundEligible: false,
+      leaseExpiresAtIso: lease.leaseExpiresAtIso,
       createdAtIso: openedAtIso,
     };
 
@@ -2014,7 +2017,7 @@ export class EasySmsService {
     }
 
     return Array.from(this.managedSessions.values()).some((session) => {
-      if (!isPhoneScopedTerminalOutcome(session.lastReportedOutcome)) {
+      if (!this.isPhoneScopedTerminalOutcomeCooling(session.lastReportedOutcome)) {
         return false;
       }
       if (numberId && session.numberId === numberId) {
@@ -2034,6 +2037,9 @@ export class EasySmsService {
     }
 
     return Array.from(this.syntheticActivationLeasesByKey.values()).some((lease) => {
+      if (!this.isSyntheticLeaseActive(lease)) {
+        return false;
+      }
       if (lease.logicalActivationIds.length < Math.max(1, lease.maxBindingsPerPhone)) {
         return false;
       }
@@ -2052,6 +2058,47 @@ export class EasySmsService {
       !this.isPublicNumberRejectedByOutcome(number)
       && !this.isPublicNumberAtSyntheticCapacity(number)
     ));
+  }
+
+  private getSyntheticLeaseWindowSeconds(): number {
+    return Math.max(60, Number(this.config.providers.synthetic?.leaseWindowSeconds ?? 20 * 60));
+  }
+
+  private getSyntheticTerminalOutcomeCooldownSeconds(): number {
+    return Math.max(60, Number(this.config.providers.synthetic?.terminalOutcomeCooldownSeconds ?? 2 * 60 * 60));
+  }
+
+  private getSyntheticLeaseExpiresAtIso(openedAtIso: string): string {
+    const openedAtMs = Date.parse(openedAtIso);
+    const effectiveOpenedAtMs = Number.isFinite(openedAtMs) ? openedAtMs : Date.now();
+    return new Date(effectiveOpenedAtMs + this.getSyntheticLeaseWindowSeconds() * 1000).toISOString();
+  }
+
+  private isSyntheticLeaseActive(lease: SyntheticActivationLeaseRecord, nowMs = Date.now()): boolean {
+    const expiresAtMs = Date.parse(lease.leaseExpiresAtIso ?? "");
+    if (Number.isFinite(expiresAtMs)) {
+      return expiresAtMs > nowMs;
+    }
+
+    const openedAtMs = Date.parse(lease.openedAtIso);
+    if (!Number.isFinite(openedAtMs)) {
+      return false;
+    }
+    return openedAtMs + this.getSyntheticLeaseWindowSeconds() * 1000 > nowMs;
+  }
+
+  private isPhoneScopedTerminalOutcomeCooling(report: SmsSessionOutcomeReport | undefined, nowMs = Date.now()): boolean {
+    if (!isPhoneScopedTerminalOutcome(report)) {
+      return false;
+    }
+
+    const snapshot = report as SmsSessionOutcomeReport & { recordedAtIso?: string };
+    const reportedAtMs = Date.parse(snapshot.recordedAtIso ?? report.observedAt ?? "");
+    if (!Number.isFinite(reportedAtMs)) {
+      return true;
+    }
+
+    return reportedAtMs + this.getSyntheticTerminalOutcomeCooldownSeconds() * 1000 > nowMs;
   }
 
   private requireIssuedNumberReference(numberId: string): SmsNumberReference {
@@ -2677,7 +2724,6 @@ export class EasySmsService {
 
     const ranked = this.getListSelectionPlan(options, now);
     return ranked
-      .filter((candidate) => candidate.healthState !== "empty")
       .map((candidate) => ({
         candidate,
         provider: this.providers.get(candidate.providerKey),
@@ -2955,6 +3001,7 @@ export class EasySmsService {
     const { provider, number } = await this.acquireSyntheticActivationNumber(input, providerKey);
     const activationId = this.allocateSyntheticActivationId();
     const openedAtIso = new Date().toISOString();
+    const leaseExpiresAtIso = this.getSyntheticLeaseExpiresAtIso(openedAtIso);
     const lease: SyntheticActivationLeaseRecord = {
       providerKey: provider.descriptor.key,
       numberId: number.numberId,
@@ -2974,6 +3021,7 @@ export class EasySmsService {
           : 1,
       ),
       openedAtIso,
+      leaseExpiresAtIso,
       logicalActivationIds: [],
     };
 

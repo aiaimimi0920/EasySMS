@@ -681,6 +681,10 @@ export interface EasySmsRuntimeConfig {
       email?: string;
       password?: string;
     };
+    synthetic: {
+      leaseWindowSeconds: number;
+      terminalOutcomeCooldownSeconds: number;
+    };
     heroSms: {
       enabled: boolean;
       apiKey?: string;

@@ -83,6 +83,7 @@ describe("hero_sms provider helpers", () => {
         smsToMe: {},
         receiveSmss: {},
         receiveSmsFreeCc: {},
+        synthetic: { leaseWindowSeconds: 1200, terminalOutcomeCooldownSeconds: 7200 },
         heroSms: {
           enabled: true,
           apiKey: "demo-key",

@@ -52,6 +52,9 @@ class MaterializeActionConfigTests(unittest.TestCase):
                           receiveSmsFreeCc:
                             email: ""
                             password: ""
+                          synthetic:
+                            leaseWindowSeconds: 1200
+                            terminalOutcomeCooldownSeconds: 7200
                           heroSms:
                             enabled: false
                             apiKey: ""
@@ -75,6 +78,8 @@ class MaterializeActionConfigTests(unittest.TestCase):
                     "EASYSMS_PROVIDER_RECEIVE_SMSS_PASSWORD": "receive-password",
                     "EASYSMS_PROVIDER_RECEIVE_SMS_FREE_CC_EMAIL": "guard@example.com",
                     "EASYSMS_PROVIDER_RECEIVE_SMS_FREE_CC_PASSWORD": "guard-password",
+                    "EASYSMS_PROVIDER_SYNTHETIC_LEASE_WINDOW_SECONDS": "900",
+                    "EASYSMS_PROVIDER_SYNTHETIC_TERMINAL_OUTCOME_COOLDOWN_SECONDS": "1800",
                     "EASYSMS_PROVIDER_HERO_SMS_ENABLED": "true",
                     "EASYSMS_PROVIDER_HERO_SMS_API_KEY": "hero-secret",
                     "EASYSMS_USERSCRIPT_ONLINESIM_API_KEY": "onlinesim-userscript",
@@ -107,6 +112,8 @@ class MaterializeActionConfigTests(unittest.TestCase):
             self.assertEqual(data["serviceBase"]["runtime"]["providers"]["onlineSim"]["apiKey"], "onlinesim-secret")
             self.assertEqual(data["serviceBase"]["runtime"]["providers"]["receiveSmss"]["username"], "receive-user")
             self.assertEqual(data["serviceBase"]["runtime"]["providers"]["receiveSmsFreeCc"]["email"], "guard@example.com")
+            self.assertEqual(data["serviceBase"]["runtime"]["providers"]["synthetic"]["leaseWindowSeconds"], 900)
+            self.assertEqual(data["serviceBase"]["runtime"]["providers"]["synthetic"]["terminalOutcomeCooldownSeconds"], 1800)
             self.assertTrue(data["serviceBase"]["runtime"]["providers"]["heroSms"]["enabled"])
             self.assertEqual(data["serviceBase"]["runtime"]["providers"]["heroSms"]["apiKey"], "hero-secret")
             self.assertEqual(data["userscript"]["defaults"]["onlineSimApiKey"], "onlinesim-userscript")

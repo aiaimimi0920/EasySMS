@@ -142,6 +142,8 @@ def build_service_overlay() -> dict[str, Any] | None:
         "EASYSMS_PROVIDER_RECEIVE_SMSS_PASSWORD",
         "EASYSMS_PROVIDER_RECEIVE_SMS_FREE_CC_EMAIL",
         "EASYSMS_PROVIDER_RECEIVE_SMS_FREE_CC_PASSWORD",
+        "EASYSMS_PROVIDER_SYNTHETIC_LEASE_WINDOW_SECONDS",
+        "EASYSMS_PROVIDER_SYNTHETIC_TERMINAL_OUTCOME_COOLDOWN_SECONDS",
         "EASYSMS_PROVIDER_HERO_SMS_ENABLED",
         "EASYSMS_PROVIDER_HERO_SMS_API_KEY",
         "EASYSMS_PROVIDER_HERO_SMS_BASE_URL",
@@ -197,6 +199,20 @@ def build_service_overlay() -> dict[str, Any] | None:
     set_if_present(receive_sms_free_cc, "password", get_secret_text("EASYSMS_PROVIDER_RECEIVE_SMS_FREE_CC_PASSWORD"))
     if receive_sms_free_cc:
         providers["receiveSmsFreeCc"] = receive_sms_free_cc
+
+    synthetic: dict[str, Any] = {}
+    set_if_present(
+        synthetic,
+        "leaseWindowSeconds",
+        parse_int_secret("EASYSMS_PROVIDER_SYNTHETIC_LEASE_WINDOW_SECONDS"),
+    )
+    set_if_present(
+        synthetic,
+        "terminalOutcomeCooldownSeconds",
+        parse_int_secret("EASYSMS_PROVIDER_SYNTHETIC_TERMINAL_OUTCOME_COOLDOWN_SECONDS"),
+    )
+    if synthetic:
+        providers["synthetic"] = synthetic
 
     hero_sms: dict[str, Any] = {}
     set_if_present(hero_sms, "enabled", parse_bool_secret("EASYSMS_PROVIDER_HERO_SMS_ENABLED"))

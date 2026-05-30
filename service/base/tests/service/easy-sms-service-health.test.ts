@@ -325,7 +325,7 @@ describe("EasySmsService health integration", () => {
     expect(calls).toEqual(["onlinesim", "receive_smss"]);
   });
 
-  it("does not call providers whose list candidate is unavailable due to an empty public pool", async () => {
+  it("retries providers whose list candidate only has an empty public pool penalty", async () => {
     const calls: string[] = [];
     const config = {
       ...createConfig(),
@@ -373,7 +373,7 @@ describe("EasySmsService health integration", () => {
 
     expect(result.items).toEqual([]);
     expect(result.errors).toEqual([]);
-    expect(calls).toEqual([]);
+    expect(calls).toEqual(["onlinesim"]);
   });
 
   it("uses probe trend penalties to demote unstable providers", () => {
