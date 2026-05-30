@@ -54,6 +54,20 @@ export function resolveReceiveSmssAuthConfig(
   return { username, password };
 }
 
+function isCommandMissingError(error: Error): boolean {
+  const normalized = error.message.toLowerCase();
+  return normalized.includes("not found") || normalized.includes("cannot find");
+}
+
+function shouldRetryReceiveSmssAnonymously(error: Error): boolean {
+  const normalized = error.message.toLowerCase();
+  return normalized.includes("http error 403")
+    || normalized.includes("forbidden")
+    || normalized.includes("login did not establish")
+    || normalized.includes("just a moment")
+    || normalized.includes("cloudflare");
+}
+
 export async function fetchReceiveSmssHtml(
   url: string,
   config: EasySmsRuntimeConfig,
@@ -73,55 +87,63 @@ export async function fetchReceiveSmssHtml(
         { command: "python", prefix: [] as string[] },
       ];
 
-  const args = [
+  const buildArgs = (payload: ReceiveSmssLoginPayload | undefined): string[] => [
     receiveSmssPythonHelperPath,
     "--url",
     url,
     "--timeout-seconds",
     String(Math.max(5, Math.ceil(config.scraping.requestTimeoutMs / 1000))),
-    ...(loginPayload
+    ...(payload
       ? [
           "--login-username",
-          loginPayload.log,
+          payload.log,
           "--login-password",
-          loginPayload.pwd,
+          payload.pwd,
         ]
       : []),
   ];
 
+  const runHelper = async (command: string, prefix: string[], args: string[]): Promise<string> => {
+    const stdout = await new Promise<string>((resolveOutput, reject) => {
+      execFile(
+        command,
+        [...prefix, ...args],
+        {
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: config.scraping.requestTimeoutMs,
+          windowsHide: true,
+        },
+        (error, commandStdout, commandStderr) => {
+          if (error) {
+            const detail = commandStderr?.trim() || commandStdout?.trim() || error.message;
+            reject(new Error(detail));
+            return;
+          }
+          resolveOutput(commandStdout);
+        },
+      );
+    });
+
+    if (!stdout.trim()) {
+      throw new Error(`receive_smss helper returned an empty response for ${url}.`);
+    }
+
+    return stdout;
+  };
+
+  const args = buildArgs(loginPayload);
+  const anonymousArgs = loginPayload ? buildArgs(undefined) : undefined;
   let lastError: Error | undefined;
   for (const candidate of commandCandidates) {
     try {
-      const stdout = await new Promise<string>((resolveOutput, reject) => {
-        execFile(
-          candidate.command,
-          [...candidate.prefix, ...args],
-          {
-            maxBuffer: 16 * 1024 * 1024,
-            timeout: config.scraping.requestTimeoutMs,
-            windowsHide: true,
-          },
-          (error, commandStdout, commandStderr) => {
-            if (error) {
-              const detail = commandStderr?.trim() || commandStdout?.trim() || error.message;
-              reject(new Error(detail));
-              return;
-            }
-            resolveOutput(commandStdout);
-          },
-        );
-      });
-
-      if (!stdout.trim()) {
-        throw new Error(`receive_smss helper returned an empty response for ${url}.`);
-      }
-
-      return stdout;
+      return await runHelper(candidate.command, candidate.prefix, args);
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
-      const normalized = lastError.message.toLowerCase();
-      if (normalized.includes("not found") || normalized.includes("cannot find")) {
+      if (isCommandMissingError(lastError)) {
         continue;
+      }
+      if (anonymousArgs && shouldRetryReceiveSmssAnonymously(lastError)) {
+        return await runHelper(candidate.command, candidate.prefix, anonymousArgs);
       }
       throw lastError;
     }

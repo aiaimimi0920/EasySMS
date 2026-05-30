@@ -9,11 +9,27 @@ const yunDuanXinPythonHelperPath = resolve(
   "session_helper.py",
 );
 
-const yunDuanXinAccessGatePattern =
-  /attention required! \| cloudflare|just a moment|enable javascript and cookies to continue|captcha|access denied/i;
+const yunDuanXinHardAccessGatePattern =
+  /attention required! \| cloudflare|just a moment|enable javascript and cookies to continue|access denied/i;
+const yunDuanXinChallengeMarkerPattern =
+  /cf-chl|cf-turnstile|challenge-platform|cloudflare ray id/i;
+const yunDuanXinNormalContentPattern =
+  /number-boxes-item|row border-bottom table-hover|在线接收短信验证码|收到的短信列表/i;
 
 export function detectYunDuanXinAccessGateHtml(html: string): boolean {
-  return yunDuanXinAccessGatePattern.test(String(html ?? ""));
+  const source = String(html ?? "");
+  if (!source.trim()) {
+    return false;
+  }
+  if (yunDuanXinNormalContentPattern.test(source)) {
+    return false;
+  }
+  return yunDuanXinHardAccessGatePattern.test(source)
+    || (
+      /captcha/i.test(source)
+      && /cloudflare|challenge|turnstile/i.test(source)
+      && yunDuanXinChallengeMarkerPattern.test(source)
+    );
 }
 
 export async function fetchYunDuanXinHtml(
