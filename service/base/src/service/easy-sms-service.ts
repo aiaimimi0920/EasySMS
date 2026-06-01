@@ -128,6 +128,103 @@ function extractOtpCandidates(text: string | undefined): string[] {
   return Array.from(text.matchAll(/\b\d{4,8}\b/g), (match) => match[0]).filter(Boolean);
 }
 
+interface SmsTargetHint {
+  service?: string;
+  businessKey?: string;
+}
+
+function isOpenAiSmsTarget(input: SmsTargetHint): boolean {
+  const target = normalizeText(`${input.service ?? ""} ${input.businessKey ?? ""}`).toLowerCase();
+  return /\b(openai|chatgpt|codex)\b/.test(target);
+}
+
+function isOpenAiSpecificSmsMessage(message: SmsInboxSnapshot["messages"][number]): boolean {
+  const sender = normalizeText(message.sender).toLowerCase();
+  const content = normalizeText(message.content).toLowerCase();
+  const combined = `${sender} ${content}`;
+  return /\b(openai|chatgpt)\b/.test(combined)
+    || combined.includes("auth.openai.com")
+    || combined.includes("platform.openai.com");
+}
+
+function buildOtpMessageFingerprint(
+  message: Pick<SmsInboxSnapshot["messages"][number], "receivedAtIso" | "content">,
+  code: string | undefined,
+): string {
+  return [
+    message.receivedAtIso ?? "",
+    code ?? "",
+    message.content ?? "",
+  ].join("|");
+}
+
+function buildSyntheticBaselineFingerprint(
+  session: Pick<EasySmsManagedSessionSnapshot, "baselineReceivedAtIso" | "baselineCode" | "baselineText">,
+): string {
+  return [
+    session.baselineReceivedAtIso ?? "",
+    session.baselineCode ?? "",
+    session.baselineText ?? "",
+  ].join("|");
+}
+
+function hasSyntheticBaseline(
+  session: Pick<EasySmsManagedSessionSnapshot, "baselineReceivedAtIso" | "baselineCode" | "baselineText">,
+): boolean {
+  return Boolean(session.baselineReceivedAtIso || session.baselineCode || session.baselineText);
+}
+
+function isAtOrBeforeSyntheticBaseline(
+  session: Pick<EasySmsManagedSessionSnapshot, "baselineReceivedAtIso" | "baselineCode" | "baselineText">,
+  message: Pick<SmsInboxSnapshot["messages"][number], "receivedAtIso" | "content">,
+  code: string | undefined,
+): boolean {
+  if (!hasSyntheticBaseline(session)) {
+    return false;
+  }
+
+  if (buildSyntheticBaselineFingerprint(session) === buildOtpMessageFingerprint(message, code)) {
+    return true;
+  }
+
+  const baselineMs = Date.parse(session.baselineReceivedAtIso ?? "");
+  const messageMs = Date.parse(message.receivedAtIso ?? "");
+  return Number.isFinite(baselineMs) && Number.isFinite(messageMs) && messageMs <= baselineMs;
+}
+
+function extractSessionScopedOtpCode(
+  session: Pick<
+    EasySmsManagedSessionSnapshot,
+    "service" | "businessKey" | "baselineReceivedAtIso" | "baselineCode" | "baselineText"
+  >,
+  message: SmsInboxSnapshot["messages"][number] | undefined,
+): string | undefined {
+  const code = extractOtpCode(message);
+  if (!message || !code) {
+    return undefined;
+  }
+
+  if (isAtOrBeforeSyntheticBaseline(session, message, code)) {
+    return undefined;
+  }
+
+  if (isOpenAiSmsTarget(session) && !isOpenAiSpecificSmsMessage(message)) {
+    return undefined;
+  }
+
+  return code;
+}
+
+function findLatestSessionScopedOtpMessage(
+  session: Pick<
+    EasySmsManagedSessionSnapshot,
+    "service" | "businessKey" | "baselineReceivedAtIso" | "baselineCode" | "baselineText"
+  >,
+  messages: SmsInboxSnapshot["messages"],
+): SmsInboxSnapshot["messages"][number] | undefined {
+  return messages.find((message) => Boolean(extractSessionScopedOtpCode(session, message)));
+}
+
 function normalizePhoneNumberForLookup(phoneNumber: string | undefined): string {
   return String(phoneNumber ?? "").replace(/[^\d+]/g, "");
 }
@@ -1676,7 +1773,7 @@ export class EasySmsService {
       observedMessageId: matched?.id,
       receivedAtIso: matched?.receivedAtIso,
       text: matched?.content,
-      candidates: messages.flatMap((message) => extractOtpCandidates(message.content)),
+      candidates: messages.flatMap((message) => message.code ? [message.code] : []),
     };
   }
 
@@ -3030,7 +3127,10 @@ export class EasySmsService {
       lease,
     );
 
-    return this.createSyntheticLogicalAssignment(lease, input);
+    const baseline = isOpenAiSmsTarget(input)
+      ? await this.readSyntheticLeaseBaseline(lease)
+      : undefined;
+    return this.createSyntheticLogicalAssignment(lease, input, baseline);
   }
 
   private async buildSyntheticCountryProjections(
@@ -3147,7 +3247,7 @@ export class EasySmsService {
         receivedAtText: message.receivedAtText,
         receivedAtIso: message.receivedAtIso,
         content: message.content,
-        code: extractOtpCode(message),
+        code: extractSessionScopedOtpCode(session, message),
         sourceUrl: message.sourceUrl,
         observedAtIso: message.receivedAtIso ?? inbox.fetchedAtIso,
       }));
@@ -3360,29 +3460,9 @@ export class EasySmsService {
       },
       { ignoreAvailabilityIssue: true },
     );
-    const latestOtpMessage = findLatestOtpMessage(inbox.messages);
-    const code = extractOtpCode(latestOtpMessage);
-    const baselineFingerprint = [
-      session.baselineReceivedAtIso ?? "",
-      session.baselineCode ?? "",
-      session.baselineText ?? "",
-    ].join("|");
-    const statusFingerprint = [
-      latestOtpMessage?.receivedAtIso ?? "",
-      code ?? "",
-      latestOtpMessage?.content ?? "",
-    ].join("|");
-
-    let received = Boolean(code);
-    let resolvedCode = code;
-    let resolvedText = latestOtpMessage?.content;
-    let resolvedReceivedAtIso = latestOtpMessage?.receivedAtIso;
-    if (received && baselineFingerprint === statusFingerprint) {
-      received = false;
-      resolvedCode = undefined;
-      resolvedText = undefined;
-      resolvedReceivedAtIso = undefined;
-    }
+    const latestOtpMessage = findLatestSessionScopedOtpMessage(session, inbox.messages);
+    const resolvedCode = extractSessionScopedOtpCode(session, latestOtpMessage);
+    const received = Boolean(resolvedCode);
 
     return {
       providerKey: session.providerKey,
@@ -3397,8 +3477,8 @@ export class EasySmsService {
       countryName: session.countryName,
       messageCount: inbox.messages.length,
       code: resolvedCode,
-      text: resolvedText,
-      receivedAtIso: resolvedReceivedAtIso,
+      text: received ? latestOtpMessage?.content : undefined,
+      receivedAtIso: received ? latestOtpMessage?.receivedAtIso : undefined,
       rawStatusText: resolvedCode ? `STATUS_OK:${resolvedCode}` : "STATUS_WAIT_CODE",
       costTier: "free",
       sessionMode: "synthetic-public-inbox",

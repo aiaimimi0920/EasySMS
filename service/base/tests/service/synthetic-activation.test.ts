@@ -147,6 +147,45 @@ class RecoveringSyntheticProvider implements SmsProvider {
   }
 }
 
+class MutableInboxSyntheticProvider implements SmsProvider {
+  inboxCallCount = 0;
+
+  readonly number = createPublicNumber("+12025550123", 1);
+
+  readonly descriptor: ProviderDescriptor = {
+    key: "onlinesim",
+    displayName: "OnlineSIM Free Numbers",
+    homepageUrl: "https://example.com/onlinesim",
+    sourceType: "public-web-scrape",
+    costTier: "free",
+    capabilities: ["list-public-numbers", "read-public-inbox"],
+    enabled: true,
+    countryHints: ["US"],
+    notes: [],
+  };
+
+  public constructor(public messages: SmsInboxSnapshot["messages"]) {}
+
+  async listPublicNumbers(_options: ListPublicNumbersOptions): Promise<SmsPublicNumber[]> {
+    return [this.number];
+  }
+
+  async getInbox(numberId: string): Promise<SmsInboxSnapshot> {
+    this.inboxCallCount += 1;
+    return {
+      providerKey: this.number.providerKey,
+      providerDisplayName: this.number.providerDisplayName,
+      numberId,
+      phoneNumber: this.number.phoneNumber,
+      sourceUrl: this.number.sourceUrl,
+      countryCode: this.number.countryCode,
+      countryName: this.number.countryName,
+      fetchedAtIso: "2026-05-12T12:00:00.000Z",
+      messages: this.messages,
+    };
+  }
+}
+
 function createPublicNumber(phoneNumber: string, sourceIndex: number): SmsPublicNumber {
   return {
     providerKey: "onlinesim",
@@ -486,6 +525,96 @@ describe("EasySms synthetic activation facade", () => {
     });
 
     expect(service.querySessions({ hasCode: true }).map((item) => item.id)).toEqual([secondSession.id, session.id]);
+  });
+
+  it("does not treat non-OpenAI public inbox OTPs as codes for OpenAI business sessions", async () => {
+    const provider = new MutableInboxSyntheticProvider([
+      {
+        id: "whatsapp-code",
+        sender: "WhatsApp",
+        receivedAtIso: "2026-05-12T12:01:00.000Z",
+        content: "Your WhatsApp account is being registered. Your WhatsApp code: 162-8034",
+        sourceUrl: "https://example.com/number/1",
+      },
+      {
+        id: "apple-code",
+        sender: "Apple",
+        receivedAtIso: "2026-05-12T12:00:30.000Z",
+        content: "Your Apple Account Code is: 330193. Do not share it with anyone.",
+        sourceUrl: "https://example.com/number/1",
+      },
+    ]);
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    const session = await service.openSession({ businessKey: "openai" });
+    const status = await service.readSessionStatus(session.id);
+    const code = await service.readSessionCode(session.id);
+    const messages = await service.listSessionMessages(session.id);
+
+    expect(status.received).toBe(false);
+    expect(status.code).toBeUndefined();
+    expect(code.source).toBe("none");
+    expect(code.code).toBeUndefined();
+    expect(code.candidates).toEqual([]);
+    expect(messages.map((message) => message.code)).toEqual([undefined, undefined]);
+  });
+
+  it("waits for an OpenAI-specific message newer than the public inbox baseline", async () => {
+    const provider = new MutableInboxSyntheticProvider([
+      {
+        id: "old-openai-code",
+        sender: "OpenAI",
+        receivedAtIso: "2026-05-12T11:59:00.000Z",
+        content: "Your OpenAI verification code is 111111.",
+        sourceUrl: "https://example.com/number/1",
+      },
+    ]);
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    const session = await service.openSession({ businessKey: "openai" });
+    await expect(service.readSessionCode(session.id)).resolves.toMatchObject({
+      source: "none",
+      code: undefined,
+      candidates: [],
+    });
+
+    provider.messages = [
+      {
+        id: "new-openai-code",
+        sender: "OpenAI",
+        receivedAtIso: "2026-05-12T12:01:00.000Z",
+        content: "Your OpenAI verification code is 222222.",
+        sourceUrl: "https://example.com/number/1",
+      },
+      ...provider.messages,
+    ];
+
+    await expect(service.readSessionCode(session.id)).resolves.toMatchObject({
+      source: "provider-inbox",
+      code: "222222",
+      candidates: ["222222"],
+    });
+  });
+
+  it("keeps generic synthetic public-inbox sessions compatible with non-OpenAI OTP messages", async () => {
+    const provider = new MutableInboxSyntheticProvider([
+      {
+        id: "generic-code",
+        sender: "Example",
+        receivedAtIso: "2026-05-12T12:01:00.000Z",
+        content: "Your verification code is 123456.",
+        sourceUrl: "https://example.com/number/1",
+      },
+    ]);
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    const session = await service.openSession({ service: "otp" });
+
+    await expect(service.readSessionCode(session.id)).resolves.toMatchObject({
+      source: "provider-inbox",
+      code: "123456",
+      candidates: ["123456"],
+    });
   });
 
   it("orders hasCode session queries deterministically when openedAt timestamps tie", async () => {
