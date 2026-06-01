@@ -135,4 +135,65 @@ describe("EasySmsProviderOperationalState", () => {
       expect.stringContaining("empty public number"),
     ]));
   });
+
+  it("does not cool provider-scope routes for transient local proxy connection failures", () => {
+    const state = new EasySmsProviderOperationalState([descriptor]);
+    const now = new Date("2026-04-05T14:00:00.000Z");
+    const context = {
+      providerKey: descriptor.key,
+      providerDisplayName: descriptor.displayName,
+      routeKind: "list-public-numbers" as const,
+      scopeKind: "provider" as const,
+      scopeValue: "global",
+    };
+
+    const failure = state.recordRouteFailure(
+      context,
+      new Error("Failed to connect to 198.18.0.1 port 42344 after 7 ms: Could not connect to server"),
+      now,
+    );
+    const candidate = state.getSelectionCandidate(context, now);
+
+    expect(failure.cooldownApplied).toBe(false);
+    expect(failure.route.cooldownUntil).toBeUndefined();
+    expect(candidate.available).toBe(true);
+    expect(candidate.providerStatus).toBe("degraded");
+    expect(candidate.errorClassPenalty).toBeGreaterThan(0);
+  });
+
+  it("keeps transient local proxy failures non-cooling even after repeated reports", () => {
+    const state = new EasySmsProviderOperationalState([descriptor]);
+    const context = {
+      providerKey: descriptor.key,
+      providerDisplayName: descriptor.displayName,
+      routeKind: "list-public-numbers" as const,
+      scopeKind: "provider" as const,
+      scopeValue: "global",
+    };
+
+    let latest = state.recordRouteFailure(
+      context,
+      new Error("Failed to connect to 198.18.0.1 port 42344 after 7 ms: Could not connect to server"),
+      new Date("2026-04-05T14:00:00.000Z"),
+    );
+    latest = state.recordRouteFailure(
+      context,
+      new Error("Failed to connect to 198.18.0.1 port 42344 after 8 ms: Could not connect to server"),
+      new Date("2026-04-05T14:01:00.000Z"),
+    );
+    latest = state.recordRouteFailure(
+      context,
+      new Error("Failed to connect to 198.18.0.1 port 42344 after 6 ms: Could not connect to server"),
+      new Date("2026-04-05T14:02:00.000Z"),
+    );
+
+    const candidate = state.getSelectionCandidate(context, new Date("2026-04-05T14:02:00.000Z"));
+
+    expect(latest.cooldownApplied).toBe(false);
+    expect(latest.route.consecutiveFailures).toBe(3);
+    expect(latest.route.cooldownUntil).toBeUndefined();
+    expect(candidate.available).toBe(true);
+    expect(candidate.availabilityIssue).toBeUndefined();
+    expect(candidate.providerStatus).toBe("degraded");
+  });
 });
