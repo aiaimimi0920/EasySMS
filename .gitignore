@@ -1,6 +1,7 @@
 config.yaml
 .tmp/
 .repo-cache/
+.runtime-keys/
 
 scripts/**/__pycache__/
 scripts/**/*.pyc
