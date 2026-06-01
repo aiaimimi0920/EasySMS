@@ -196,28 +196,29 @@ function deriveStatusPenalty(
   return 0;
 }
 
-function isTransientLocalProxyConnectionFailure(message: string): boolean {
-  if (!message.includes("failed to connect") && !message.includes("could not connect")) {
-    return false;
-  }
-
-  const localProxyMarkers = [
-    "198.18.0.1 port 42344",
-    "host.docker.internal port 42344",
-    "http.docker.internal:3128",
-    "127.0.0.1:42344",
+function isTransientNetworkConnectionFailure(message: string): boolean {
+  const transientMarkers = [
+    "failed to connect",
+    "could not connect",
+    "connection refused",
+    "connection reset",
+    "connectex",
+    "econnrefused",
+    "econnreset",
+    "enetwork",
+    "etimedout",
   ];
-  return localProxyMarkers.some((marker) => message.includes(marker));
+  return transientMarkers.some((marker) => message.includes(marker));
 }
 
 export function classifySmsProviderRouteFailure(error: unknown): SmsProviderRouteFailureDecision {
   const message = normalizeText(error instanceof Error ? error.message : String(error)).toLowerCase();
 
-  if (isTransientLocalProxyConnectionFailure(message)) {
+  if (isTransientNetworkConnectionFailure(message)) {
     return {
       healthState: "blocked",
       errorClass: "route:network",
-      errorCode: "transient_local_proxy_connection",
+      errorCode: "transient_network_connection",
       penalty: 30,
       cooldownBaseMs: 0,
       cooldownEscalatedMs: 0,

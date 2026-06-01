@@ -136,7 +136,7 @@ describe("EasySmsProviderOperationalState", () => {
     ]));
   });
 
-  it("does not cool provider-scope routes for transient local proxy connection failures", () => {
+  it("does not cool provider-scope routes for transient network connection failures", () => {
     const state = new EasySmsProviderOperationalState([descriptor]);
     const now = new Date("2026-04-05T14:00:00.000Z");
     const context = {
@@ -149,7 +149,7 @@ describe("EasySmsProviderOperationalState", () => {
 
     const failure = state.recordRouteFailure(
       context,
-      new Error("Failed to connect to 198.18.0.1 port 42344 after 7 ms: Could not connect to server"),
+      new Error("Failed to connect to upstream host after 7 ms: Could not connect to server"),
       now,
     );
     const candidate = state.getSelectionCandidate(context, now);
@@ -161,7 +161,7 @@ describe("EasySmsProviderOperationalState", () => {
     expect(candidate.errorClassPenalty).toBeGreaterThan(0);
   });
 
-  it("keeps transient local proxy failures non-cooling even after repeated reports", () => {
+  it("keeps transient network connection failures non-cooling even after repeated reports", () => {
     const state = new EasySmsProviderOperationalState([descriptor]);
     const context = {
       providerKey: descriptor.key,
@@ -173,17 +173,17 @@ describe("EasySmsProviderOperationalState", () => {
 
     let latest = state.recordRouteFailure(
       context,
-      new Error("Failed to connect to 198.18.0.1 port 42344 after 7 ms: Could not connect to server"),
+      new Error("Failed to connect to upstream host after 7 ms: Could not connect to server"),
       new Date("2026-04-05T14:00:00.000Z"),
     );
     latest = state.recordRouteFailure(
       context,
-      new Error("Failed to connect to 198.18.0.1 port 42344 after 8 ms: Could not connect to server"),
+      new Error("ECONNREFUSED while connecting to upstream host"),
       new Date("2026-04-05T14:01:00.000Z"),
     );
     latest = state.recordRouteFailure(
       context,
-      new Error("Failed to connect to 198.18.0.1 port 42344 after 6 ms: Could not connect to server"),
+      new Error("connectex: connection refused"),
       new Date("2026-04-05T14:02:00.000Z"),
     );
 
