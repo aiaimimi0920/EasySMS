@@ -227,6 +227,57 @@ describe("EasySmsService health integration", () => {
     expect(plan[1]?.providerKey).toBe("onlinesim");
   });
 
+  it("marks synthetic list candidates unavailable when provider-scope inbox route is cooling", () => {
+    const service = new EasySmsService(
+      createConfig(),
+      [
+        new FakeSmsProvider(
+          {
+            ...createDescriptor(),
+            capabilities: ["list-public-numbers", "read-public-inbox"],
+          },
+          async () => [{
+            providerKey: "onlinesim",
+            providerDisplayName: "Fake Provider",
+            numberId: "number-1",
+            sourceUrl: "https://example.com/number",
+            phoneNumber: "+10000000000",
+          }],
+          async () => ({
+            providerKey: "onlinesim",
+            providerDisplayName: "Fake Provider",
+            numberId: "number-1",
+            phoneNumber: "+10000000000",
+            sourceUrl: "https://example.com/number",
+            fetchedAtIso: new Date().toISOString(),
+            messages: [],
+          }),
+        ),
+      ],
+    );
+
+    service.operationalState.recordRouteFailure(
+      {
+        providerKey: "onlinesim",
+        providerDisplayName: "Fake Provider",
+        routeKind: "read-public-inbox",
+        scopeKind: "provider",
+        scopeValue: "global",
+      },
+      new Error("Cloudflare challenge page"),
+      new Date("2026-04-05T16:00:00.000Z"),
+    );
+
+    const plan = service.getListSelectionPlan({}, new Date("2026-04-05T16:01:00.000Z"));
+
+    expect(plan[0]).toMatchObject({
+      providerKey: "onlinesim",
+      available: false,
+      healthState: "challenge",
+    });
+    expect(plan[0]?.availabilityIssue).toContain("read-public-inbox");
+  });
+
   it("stops on the first successful provider in weighted-fallback mode", async () => {
     const calls: string[] = [];
     const config = {

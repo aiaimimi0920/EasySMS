@@ -61,6 +61,7 @@ export interface HeroSmsActivationCreateInput {
   fixedPrice?: boolean;
   ref?: string;
   phoneException?: string;
+  phoneBlacklist?: string[];
   selectionMode?: HeroSmsSelectionMode;
   allowReuse?: boolean;
   businessKey?: string;

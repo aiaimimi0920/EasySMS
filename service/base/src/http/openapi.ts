@@ -2083,6 +2083,10 @@ export function buildOpenApiDocument(): Record<string, unknown> {
             fixedPrice: { type: "boolean" },
             ref: { type: "string" },
             phoneException: { type: "string" },
+            phoneBlacklist: {
+              type: "array",
+              items: { type: "string" },
+            },
             selectionMode: { type: "string", enum: ["price-first", "success-first", "stock-first", "balanced"] },
             allowReuse: { type: "boolean" },
             businessKey: { type: "string" },

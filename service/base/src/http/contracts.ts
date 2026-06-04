@@ -300,6 +300,14 @@ export function parseHeroSmsActivationCreateInput(body: unknown): HeroSmsActivat
   if (typeof payload.phoneException === "string" && payload.phoneException.trim()) {
     input.phoneException = payload.phoneException.trim();
   }
+  if (payload.phoneBlacklist !== undefined) {
+    if (!Array.isArray(payload.phoneBlacklist)) {
+      throw new ValidationError("phoneBlacklist must be an array of strings when provided.");
+    }
+    input.phoneBlacklist = payload.phoneBlacklist
+      .map((item) => typeof item === "string" ? item.trim() : "")
+      .filter((item) => item.length > 0);
+  }
   if (typeof payload.selectionMode === "string" && payload.selectionMode.trim()) {
     const selectionMode = payload.selectionMode.trim();
     if (!["price-first", "success-first", "stock-first", "balanced"].includes(selectionMode)) {
@@ -340,6 +348,7 @@ export function parseActivationCreateInputFromUrl(url: URL): HeroSmsActivationCr
     "fixedPrice",
     "ref",
     "phoneException",
+    "phoneBlacklist",
     "selectionMode",
     "allowReuse",
     "businessKey",
@@ -356,6 +365,12 @@ export function parseActivationCreateInputFromUrl(url: URL): HeroSmsActivationCr
   }
   if (payload.allowReuse !== undefined) {
     payload.allowReuse = String(payload.allowReuse).toLowerCase() === "true";
+  }
+  if (payload.phoneBlacklist !== undefined) {
+    payload.phoneBlacklist = String(payload.phoneBlacklist)
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
   }
 
   return parseHeroSmsActivationCreateInput(payload);

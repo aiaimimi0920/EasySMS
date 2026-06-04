@@ -244,6 +244,16 @@ function hasAnyPhoneNumberLookupKey(left: Set<string>, right: Set<string>): bool
   return false;
 }
 
+function buildPhoneBlacklistLookupKeys(phoneBlacklist: string[] | undefined): Set<string> {
+  const keys = new Set<string>();
+  for (const phoneNumber of phoneBlacklist ?? []) {
+    for (const key of buildPhoneNumberLookupKeys(phoneNumber)) {
+      keys.add(key);
+    }
+  }
+  return keys;
+}
+
 function isPhoneScopedTerminalOutcome(report: SmsSessionOutcomeReport | undefined): boolean {
   if (!report || report.success) {
     return false;
@@ -373,6 +383,8 @@ export class EasySmsService {
   readonly projectedMessages: Map<string, SmsSessionMessage[]>;
   readonly issuedNumbers: Map<string, SmsNumberReference>;
   readonly runtimeDiagnostics: EasySmsRuntimeDiagnostics;
+  private readonly pendingSyntheticNumberIds: Set<string>;
+  private readonly pendingSyntheticPhoneLookupKeys: Set<string>;
   private nextSyntheticActivationId: number;
   private nextSessionSequence: number;
 
@@ -393,6 +405,8 @@ export class EasySmsService {
     this.projectedMessages = new Map();
     this.issuedNumbers = new Map();
     this.runtimeDiagnostics = this.createInitialRuntimeDiagnostics(config);
+    this.pendingSyntheticNumberIds = new Set();
+    this.pendingSyntheticPhoneLookupKeys = new Set();
     this.nextSyntheticActivationId = INITIAL_SYNTHETIC_ACTIVATION_ID;
     this.nextSessionSequence = INITIAL_SESSION_SEQUENCE;
   }
@@ -698,6 +712,67 @@ export class EasySmsService {
     return this.operationalState.listProbeTrends(providerKey, now);
   }
 
+  private buildSyntheticInboxSelectionRouteContext(
+    provider: SmsProvider,
+    options: Pick<ListPublicNumbersOptions, "countryCode" | "countryName">,
+  ): SmsProviderRouteContext {
+    if (options.countryCode) {
+      return {
+        providerKey: provider.descriptor.key,
+        providerDisplayName: provider.descriptor.displayName,
+        routeKind: "read-public-inbox",
+        scopeKind: "country",
+        scopeValue: options.countryCode,
+      };
+    }
+
+    if (options.countryName) {
+      return {
+        providerKey: provider.descriptor.key,
+        providerDisplayName: provider.descriptor.displayName,
+        routeKind: "read-public-inbox",
+        scopeKind: "country",
+        scopeValue: options.countryName,
+      };
+    }
+
+    return {
+      providerKey: provider.descriptor.key,
+      providerDisplayName: provider.descriptor.displayName,
+      routeKind: "read-public-inbox",
+      scopeKind: "provider",
+      scopeValue: "global",
+    };
+  }
+
+  private applySyntheticInboxAvailability(
+    provider: SmsProvider,
+    candidate: SmsProviderSelectionCandidate,
+    options: Pick<ListPublicNumbersOptions, "countryCode" | "countryName">,
+    now: Date,
+  ): SmsProviderSelectionCandidate {
+    if (!this.supportsSyntheticActivation(provider.descriptor)) {
+      return candidate;
+    }
+
+    const inboxAvailabilityIssue = this.operationalState.getAvailabilityIssue(
+      this.buildSyntheticInboxSelectionRouteContext(provider, options),
+      now,
+    );
+    if (!inboxAvailabilityIssue) {
+      return candidate;
+    }
+
+    return {
+      ...candidate,
+      available: false,
+      availabilityIssue: candidate.availabilityIssue ?? inboxAvailabilityIssue.reason,
+      notes: candidate.notes.includes(inboxAvailabilityIssue.reason)
+        ? candidate.notes
+        : [...candidate.notes, inboxAvailabilityIssue.reason],
+    };
+  }
+
   getListSelectionPlan(
     options: Pick<ListPublicNumbersOptions, "countryCode" | "countryName" | "providerKey" | "costTier" | "limit"> = {},
     now: Date = new Date(),
@@ -710,7 +785,12 @@ export class EasySmsService {
       }
 
       const ranked = this.operationalState.rankSelectionCandidates([
-        this.operationalState.getSelectionCandidate(this.buildListRouteContext(provider, options), now),
+        this.applySyntheticInboxAvailability(
+          provider,
+          this.operationalState.getSelectionCandidate(this.buildListRouteContext(provider, options), now),
+          options,
+          now,
+        ),
       ]);
       return typeof limit === "number" ? ranked.slice(0, limit) : ranked;
     }
@@ -719,7 +799,12 @@ export class EasySmsService {
       Array.from(this.providers.values(), (provider) =>
         !this.matchesListCostTier(provider.descriptor, options.costTier)
           ? undefined
-          : this.operationalState.getSelectionCandidate(this.buildListRouteContext(provider, options), now)
+          : this.applySyntheticInboxAvailability(
+            provider,
+            this.operationalState.getSelectionCandidate(this.buildListRouteContext(provider, options), now),
+            options,
+            now,
+          )
       ).filter((candidate): candidate is SmsProviderSelectionCandidate => candidate !== undefined)
     );
     return typeof limit === "number" ? ranked.slice(0, limit) : ranked;
@@ -739,6 +824,9 @@ export class EasySmsService {
         return this.registerManagedSessionFromActivation(activation);
       } catch (error) {
         if (!(error instanceof ProviderRouteUnavailableError)) {
+          throw error;
+        }
+        if (input.numberId) {
           throw error;
         }
       }
@@ -1059,6 +1147,10 @@ export class EasySmsService {
     input: HeroSmsActivationCreateInput,
     providerKey?: string,
   ): Promise<SyntheticActivationLeaseRecord | undefined> {
+    if (input.allowReuse === false) {
+      return undefined;
+    }
+
     const service = input.service?.trim() || DEFAULT_SYNTHETIC_ACTIVATION_SERVICE;
     const businessKey = normalizeText(input.businessKey) || HEROSMS_DEFAULT_BUSINESS_KEY;
     const maxBindingsPerPhone = Math.max(
@@ -1088,6 +1180,16 @@ export class EasySmsService {
       .filter((lease) => !wantedCountryCode || normalizeText(lease.countryCode) === wantedCountryCode)
       .filter((lease) => !wantedCountryName || normalizeText(lease.countryName).toLowerCase().includes(wantedCountryName))
       .filter((lease) => !wantedOperator || lease.operator === wantedOperator)
+      .filter((lease) => !this.isPhoneRejectedByCallerBlacklist(lease.phoneNumber, input))
+      .filter((lease) => !this.isPublicNumberReservedByPendingSyntheticActivation({
+        providerKey: lease.providerKey as SmsProviderKey,
+        providerDisplayName: this.providers.get(lease.providerKey)?.descriptor.displayName ?? lease.providerKey,
+        numberId: lease.numberId,
+        sourceUrl: lease.sourceUrl,
+        phoneNumber: lease.phoneNumber,
+        countryName: lease.countryName,
+        countryCode: lease.countryCode,
+      }))
       .filter((lease) => lease.logicalActivationIds.length < Math.max(1, lease.maxBindingsPerPhone))
       .filter((lease) => !this.isPhoneOrNumberRejectedByOutcome(lease.phoneNumber, lease.numberId))
       .sort((left, right) => Date.parse(left.openedAtIso) - Date.parse(right.openedAtIso))[0];
@@ -2107,6 +2209,53 @@ export class EasySmsService {
     return this.isPhoneOrNumberAtSyntheticCapacity(number.phoneNumber, number.numberId);
   }
 
+  private isPublicNumberRejectedByCallerBlacklist(
+    number: SmsPublicNumber,
+    phoneBlacklistLookupKeys: Set<string>,
+  ): boolean {
+    if (phoneBlacklistLookupKeys.size === 0) {
+      return false;
+    }
+    return hasAnyPhoneNumberLookupKey(
+      buildPhoneNumberLookupKeys(number.phoneNumber),
+      phoneBlacklistLookupKeys,
+    );
+  }
+
+  private isPhoneRejectedByCallerBlacklist(
+    phoneNumber: string | undefined,
+    input: HeroSmsActivationCreateInput,
+  ): boolean {
+    const phoneBlacklistLookupKeys = buildPhoneBlacklistLookupKeys(input.phoneBlacklist);
+    if (phoneBlacklistLookupKeys.size === 0) {
+      return false;
+    }
+    return hasAnyPhoneNumberLookupKey(
+      buildPhoneNumberLookupKeys(phoneNumber),
+      phoneBlacklistLookupKeys,
+    );
+  }
+
+  private isPublicNumberReservedByPendingSyntheticActivation(number: SmsPublicNumber): boolean {
+    if (this.pendingSyntheticNumberIds.has(number.numberId)) {
+      return true;
+    }
+
+    const lookupKeys = buildPhoneNumberLookupKeys(number.phoneNumber);
+    return hasAnyPhoneNumberLookupKey(lookupKeys, this.pendingSyntheticPhoneLookupKeys);
+  }
+
+  private isPublicNumberInboxRouteAvailable(provider: SmsProvider, number: SmsPublicNumber): boolean {
+    const reference = decodeNumberId(number.numberId);
+    return this.operationalState.getAvailabilityIssue(
+      this.buildInboxRouteContext(provider, reference),
+    ) === undefined;
+  }
+
+  private isPublicNumberOnActiveSyntheticLease(number: SmsPublicNumber): boolean {
+    return this.isPhoneOrNumberOnActiveSyntheticLease(number.phoneNumber, number.numberId);
+  }
+
   private isPhoneOrNumberRejectedByOutcome(phoneNumber: string | undefined, numberId?: string): boolean {
     const lookupKeys = buildPhoneNumberLookupKeys(phoneNumber);
     if (lookupKeys.size === 0 && !numberId) {
@@ -2124,6 +2273,26 @@ export class EasySmsService {
         return false;
       }
       return hasAnyPhoneNumberLookupKey(lookupKeys, buildPhoneNumberLookupKeys(session.phoneNumber));
+    });
+  }
+
+  private isPhoneOrNumberOnActiveSyntheticLease(phoneNumber: string | undefined, numberId?: string): boolean {
+    const lookupKeys = buildPhoneNumberLookupKeys(phoneNumber);
+    if (lookupKeys.size === 0 && !numberId) {
+      return false;
+    }
+
+    return Array.from(this.syntheticActivationLeasesByKey.values()).some((lease) => {
+      if (!this.isSyntheticLeaseActive(lease)) {
+        return false;
+      }
+      if (numberId && lease.numberId === numberId) {
+        return true;
+      }
+      if (lookupKeys.size === 0) {
+        return false;
+      }
+      return hasAnyPhoneNumberLookupKey(lookupKeys, buildPhoneNumberLookupKeys(lease.phoneNumber));
     });
   }
 
@@ -2150,11 +2319,37 @@ export class EasySmsService {
     });
   }
 
-  private filterUsablePublicNumbers(numbers: SmsPublicNumber[]): SmsPublicNumber[] {
+  private filterUsablePublicNumbers(
+    numbers: SmsPublicNumber[],
+    options: { allowActiveLeaseReuse?: boolean; phoneBlacklistLookupKeys?: Set<string> } = {},
+  ): SmsPublicNumber[] {
+    const allowActiveLeaseReuse = options.allowActiveLeaseReuse !== false;
+    const phoneBlacklistLookupKeys = options.phoneBlacklistLookupKeys ?? new Set<string>();
     return numbers.filter((number) => (
       !this.isPublicNumberRejectedByOutcome(number)
-      && !this.isPublicNumberAtSyntheticCapacity(number)
+      && !this.isPublicNumberRejectedByCallerBlacklist(number, phoneBlacklistLookupKeys)
+      && !this.isPublicNumberReservedByPendingSyntheticActivation(number)
+      && (
+        allowActiveLeaseReuse
+          ? !this.isPublicNumberAtSyntheticCapacity(number)
+          : !this.isPublicNumberOnActiveSyntheticLease(number)
+      )
     ));
+  }
+
+  private reservePendingSyntheticPublicNumber(number: SmsPublicNumber): () => void {
+    this.pendingSyntheticNumberIds.add(number.numberId);
+    const lookupKeys = buildPhoneNumberLookupKeys(number.phoneNumber);
+    for (const key of lookupKeys) {
+      this.pendingSyntheticPhoneLookupKeys.add(key);
+    }
+
+    return () => {
+      this.pendingSyntheticNumberIds.delete(number.numberId);
+      for (const key of lookupKeys) {
+        this.pendingSyntheticPhoneLookupKeys.delete(key);
+      }
+    };
   }
 
   private getSyntheticLeaseWindowSeconds(): number {
@@ -2487,6 +2682,7 @@ export class EasySmsService {
       this.managedSessionIdByActivationId.set(session.activationId, session.id);
       if (session.sessionMode === "synthetic-public-inbox") {
         this.syntheticActivationSessions.set(session.activationId, session);
+        this.hydrateSyntheticLeaseFromSession(session, now);
       }
       if (session.numberId) {
         this.issuedNumbers.set(session.numberId, {
@@ -2519,6 +2715,57 @@ export class EasySmsService {
       snapshot?.nextSessionSequence ?? INITIAL_SESSION_SEQUENCE,
       this.computeNextSessionSequence(),
     );
+  }
+
+  private hydrateSyntheticLeaseFromSession(
+    session: EasySmsManagedSessionSnapshot,
+    now: Date,
+  ): void {
+    if (!session.numberId || !session.phoneNumber) {
+      return;
+    }
+
+    const lease: SyntheticActivationLeaseRecord = {
+      providerKey: session.providerKey,
+      numberId: session.numberId,
+      sourceUrl: session.sourceUrl,
+      phoneNumber: session.phoneNumber,
+      service: session.service || DEFAULT_SYNTHETIC_ACTIVATION_SERVICE,
+      countryId: session.countryId ?? DEFAULT_SYNTHETIC_COUNTRY_ID,
+      countryCode: session.countryCode,
+      countryName: session.countryName,
+      operator: session.operator,
+      selectionMode: session.selectionMode,
+      businessKey: normalizeText(session.businessKey) || HEROSMS_DEFAULT_BUSINESS_KEY,
+      maxBindingsPerPhone: Math.max(1, Number(session.maxBindingsPerPhone ?? 1)),
+      openedAtIso: session.openedAtIso,
+      leaseExpiresAtIso: session.leaseExpiresAtIso ?? this.getSyntheticLeaseExpiresAtIso(session.openedAtIso),
+      logicalActivationIds: [session.activationId],
+    };
+
+    if (!this.isSyntheticLeaseActive(lease, now.getTime())) {
+      return;
+    }
+
+    const leaseKey = this.buildSyntheticLeaseKey(
+      lease.providerKey,
+      lease.numberId,
+      lease.businessKey,
+      lease.service,
+    );
+    const existing = this.syntheticActivationLeasesByKey.get(leaseKey);
+    if (!existing) {
+      this.syntheticActivationLeasesByKey.set(leaseKey, lease);
+      return;
+    }
+
+    existing.maxBindingsPerPhone = Math.max(existing.maxBindingsPerPhone, lease.maxBindingsPerPhone);
+    existing.leaseExpiresAtIso = existing.leaseExpiresAtIso ?? lease.leaseExpiresAtIso;
+    existing.logicalActivationIds = Array.from(new Set([
+      ...existing.logicalActivationIds,
+      session.activationId,
+    ]));
+    this.syntheticActivationLeasesByKey.set(leaseKey, existing);
   }
 
   async listPublicNumbers(options: ListPublicNumbersOptions): Promise<ListPublicNumbersResult> {
@@ -3122,15 +3369,23 @@ export class EasySmsService {
       logicalActivationIds: [],
     };
 
-    this.syntheticActivationLeasesByKey.set(
-      this.buildSyntheticLeaseKey(lease.providerKey, lease.numberId, lease.businessKey, lease.service),
-      lease,
-    );
+    const leaseKey = this.buildSyntheticLeaseKey(lease.providerKey, lease.numberId, lease.businessKey, lease.service);
+    const releasePendingReservation = this.reservePendingSyntheticPublicNumber(number);
+    this.syntheticActivationLeasesByKey.set(leaseKey, lease);
 
-    const baseline = isOpenAiSmsTarget(input)
-      ? await this.readSyntheticLeaseBaseline(lease)
-      : undefined;
-    return this.createSyntheticLogicalAssignment(lease, input, baseline);
+    try {
+      const baseline = isOpenAiSmsTarget(input)
+        ? await this.readSyntheticLeaseBaseline(lease)
+        : undefined;
+      return this.createSyntheticLogicalAssignment(lease, input, baseline);
+    } catch (error) {
+      if (lease.logicalActivationIds.length === 0) {
+        this.syntheticActivationLeasesByKey.delete(leaseKey);
+      }
+      throw error;
+    } finally {
+      releasePendingReservation();
+    }
   }
 
   private async buildSyntheticCountryProjections(
@@ -3311,6 +3566,10 @@ export class EasySmsService {
       return;
     }
 
+    if (isPhoneScopedTerminalOutcome(report)) {
+      return;
+    }
+
     const failureReason = report.failureReason?.trim() || "session_outcome_failure";
     const detail = report.detail?.trim();
     this.operationalState.recordRouteFailure(
@@ -3333,6 +3592,18 @@ export class EasySmsService {
           "The requested numberId belongs to a different provider.",
         );
       }
+      if (this.isPhoneRejectedByCallerBlacklist(reference.phoneNumber, input)) {
+        throw new ProviderRouteUnavailableError(
+          provider.descriptor.key,
+          "The requested numberId is listed in phoneBlacklist.",
+        );
+      }
+      const inboxAvailabilityIssue = this.operationalState.getAvailabilityIssue(
+        this.buildInboxRouteContext(provider, reference),
+      );
+      if (inboxAvailabilityIssue) {
+        throw new ProviderRouteUnavailableError(provider.descriptor.key, inboxAvailabilityIssue.reason);
+      }
 
       return {
         provider,
@@ -3348,6 +3619,8 @@ export class EasySmsService {
         },
       };
     }
+
+    const phoneBlacklistLookupKeys = buildPhoneBlacklistLookupKeys(input.phoneBlacklist);
 
     const orderedProviders = this.resolveProvidersForList({
       providerKey,
@@ -3383,7 +3656,10 @@ export class EasySmsService {
           countryName: input.countryName,
           costTier: "free",
         });
-        const usableItems = this.filterUsablePublicNumbers(items);
+        const usableItems = this.filterUsablePublicNumbers(items, {
+          allowActiveLeaseReuse: input.allowReuse !== false,
+          phoneBlacklistLookupKeys,
+        }).filter((number) => this.isPublicNumberInboxRouteAvailable(provider, number));
         this.operationalState.recordRouteSuccess(context, {
           detail: usableItems.length > 0
             ? "Synthetic activation selected a public number."

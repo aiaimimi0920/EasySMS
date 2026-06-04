@@ -4,6 +4,7 @@ import type {
   EasySmsRuntimeConfig,
   ListPublicNumbersOptions,
   ProviderDescriptor,
+  SmsProviderKey,
   SmsInboxSnapshot,
   SmsPublicNumber,
 } from "../../src/domain/models.js";
@@ -186,12 +187,118 @@ class MutableInboxSyntheticProvider implements SmsProvider {
   }
 }
 
+class FirstInboxReadBlockingSyntheticProvider implements SmsProvider {
+  readonly number = createPublicNumber("+12025550123", 1);
+  inboxCallCount = 0;
+  private firstInboxStartedResolve!: () => void;
+  private firstInboxReleaseResolve!: () => void;
+  readonly firstInboxStarted = new Promise<void>((resolve) => {
+    this.firstInboxStartedResolve = resolve;
+  });
+  readonly firstInboxRelease = new Promise<void>((resolve) => {
+    this.firstInboxReleaseResolve = resolve;
+  });
+
+  readonly descriptor: ProviderDescriptor = {
+    key: "onlinesim",
+    displayName: "OnlineSIM Free Numbers",
+    homepageUrl: "https://example.com/onlinesim",
+    sourceType: "public-web-scrape",
+    costTier: "free",
+    capabilities: ["list-public-numbers", "read-public-inbox"],
+    enabled: true,
+    countryHints: ["US"],
+    notes: [],
+  };
+
+  async listPublicNumbers(_options: ListPublicNumbersOptions): Promise<SmsPublicNumber[]> {
+    return [this.number];
+  }
+
+  async getInbox(numberId: string): Promise<SmsInboxSnapshot> {
+    this.inboxCallCount += 1;
+    if (this.inboxCallCount === 1) {
+      this.firstInboxStartedResolve();
+      await this.firstInboxRelease;
+    }
+    return {
+      providerKey: this.number.providerKey,
+      providerDisplayName: this.number.providerDisplayName,
+      numberId,
+      phoneNumber: this.number.phoneNumber,
+      sourceUrl: this.number.sourceUrl,
+      countryCode: this.number.countryCode,
+      countryName: this.number.countryName,
+      fetchedAtIso: "2026-05-12T12:00:00.000Z",
+      messages: [],
+    };
+  }
+
+  releaseFirstInboxRead(): void {
+    this.firstInboxReleaseResolve();
+  }
+}
+
+class ConfigurableSyntheticProvider implements SmsProvider {
+  inboxCallCount = 0;
+  readonly number: SmsPublicNumber;
+  readonly descriptor: ProviderDescriptor;
+
+  public constructor(
+    key: SmsProviderKey,
+    displayName: string,
+    phoneNumber: string,
+    sourceIndex: number,
+  ) {
+    this.descriptor = {
+      key,
+      displayName,
+      homepageUrl: `https://example.com/${key}`,
+      sourceType: "public-web-scrape",
+      costTier: "free",
+      capabilities: ["list-public-numbers", "read-public-inbox"],
+      enabled: true,
+      countryHints: ["US"],
+      notes: [],
+    };
+    this.number = createPublicNumberForProvider(key, displayName, phoneNumber, sourceIndex);
+  }
+
+  async listPublicNumbers(_options: ListPublicNumbersOptions): Promise<SmsPublicNumber[]> {
+    return [this.number];
+  }
+
+  async getInbox(numberId: string): Promise<SmsInboxSnapshot> {
+    this.inboxCallCount += 1;
+    return {
+      providerKey: this.number.providerKey,
+      providerDisplayName: this.number.providerDisplayName,
+      numberId,
+      phoneNumber: this.number.phoneNumber,
+      sourceUrl: this.number.sourceUrl,
+      countryCode: this.number.countryCode,
+      countryName: this.number.countryName,
+      fetchedAtIso: "2026-05-12T12:00:00.000Z",
+      messages: [],
+    };
+  }
+}
+
 function createPublicNumber(phoneNumber: string, sourceIndex: number): SmsPublicNumber {
+  return createPublicNumberForProvider("onlinesim", "OnlineSIM Free Numbers", phoneNumber, sourceIndex);
+}
+
+function createPublicNumberForProvider(
+  providerKey: SmsProviderKey,
+  providerDisplayName: string,
+  phoneNumber: string,
+  sourceIndex: number,
+): SmsPublicNumber {
   return {
-    providerKey: "onlinesim",
-    providerDisplayName: "OnlineSIM Free Numbers",
+    providerKey,
+    providerDisplayName,
     numberId: encodeNumberId({
-      providerKey: "onlinesim",
+      providerKey,
       sourceUrl: `https://example.com/number/${sourceIndex}`,
       phoneNumber,
       countryCode: "+1",
@@ -215,6 +322,16 @@ function createConfig(heroEnabled = false): EasySmsRuntimeConfig {
         enabled: heroEnabled,
         apiKey: heroEnabled ? "placeholder-key" : "",
       },
+    },
+  };
+}
+
+function createConfigWithProviders(providerKeys: string[]): EasySmsRuntimeConfig {
+  return {
+    ...createConfig(),
+    providers: {
+      ...createConfig().providers,
+      enabledProviders: providerKeys,
     },
   };
 }
@@ -292,6 +409,35 @@ describe("EasySms synthetic activation facade", () => {
     expect(provider.listLimits.some((limit) => limit > 1)).toBe(true);
   });
 
+  it("does not open caller-blacklisted public numbers", async () => {
+    const rejectedNumber = createPublicNumber("+12025550123", 1);
+    const usableNumber = createPublicNumber("+12025550124", 2);
+    const provider = new MultiNumberSyntheticProvider([rejectedNumber, usableNumber]);
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    const session = await service.openSession({
+      service: "otp",
+      phoneBlacklist: ["12025550123"],
+    });
+
+    expect(session.phoneNumber).toBe(usableNumber.phoneNumber);
+    expect(session.numberId).toBe(usableNumber.numberId);
+  });
+
+  it("rejects an explicit public number when the caller blacklists its phone", async () => {
+    const rejectedNumber = createPublicNumber("+12025550123", 1);
+    const provider = new MultiNumberSyntheticProvider([rejectedNumber]);
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    await service.listPublicNumbers({ providerKey: "onlinesim", limit: 1 });
+
+    await expect(service.openSession({
+      service: "otp",
+      numberId: rejectedNumber.numberId,
+      phoneBlacklist: [rejectedNumber.phoneNumber],
+    })).rejects.toThrow("requested numberId is listed in phoneBlacklist");
+  });
+
   it("does not reacquire public numbers whose local synthetic lease is already at capacity", async () => {
     const firstNumber = createPublicNumber("+12025550123", 1);
     const secondNumber = createPublicNumber("+12025550124", 2);
@@ -302,6 +448,143 @@ describe("EasySms synthetic activation facade", () => {
     expect(firstSession.phoneNumber).toBe(firstNumber.phoneNumber);
 
     const secondSession = await service.openSession({ service: "otp" });
+    expect(secondSession.phoneNumber).toBe(secondNumber.phoneNumber);
+    expect(secondSession.numberId).toBe(secondNumber.numberId);
+  });
+
+  it("does not reuse active synthetic leases when the caller disables reuse", async () => {
+    const firstNumber = createPublicNumber("+12025550123", 1);
+    const secondNumber = createPublicNumber("+12025550124", 2);
+    const provider = new MultiNumberSyntheticProvider([firstNumber, secondNumber]);
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    const firstSession = await service.openSession({
+      businessKey: "openai",
+      allowReuse: false,
+      maxBindingsPerPhone: 2,
+    });
+    const secondSession = await service.openSession({
+      businessKey: "openai",
+      allowReuse: false,
+      maxBindingsPerPhone: 2,
+    });
+
+    expect(firstSession.phoneNumber).toBe(firstNumber.phoneNumber);
+    expect(secondSession.phoneNumber).toBe(secondNumber.phoneNumber);
+    expect(secondSession.numberId).toBe(secondNumber.numberId);
+  });
+
+  it("does not open new synthetic sessions on providers whose inbox route is cooling", async () => {
+    const coolingProvider = new ConfigurableSyntheticProvider(
+      "onlinesim",
+      "OnlineSIM Free Numbers",
+      "+12025550123",
+      1,
+    );
+    const fallbackProvider = new ConfigurableSyntheticProvider(
+      "sms24",
+      "SMS24.me",
+      "+12025550124",
+      2,
+    );
+    const service = new EasySmsService(
+      createConfigWithProviders(["onlinesim", "sms24"]),
+      [coolingProvider, fallbackProvider],
+    );
+
+    service.operationalState.recordRouteFailure(
+      {
+        providerKey: "onlinesim",
+        providerDisplayName: "OnlineSIM Free Numbers",
+        routeKind: "read-public-inbox",
+        scopeKind: "country",
+        scopeValue: "+1",
+      },
+      new Error("Cloudflare challenge page"),
+      new Date(),
+    );
+
+    const session = await service.openSession({ service: "otp" });
+
+    expect(session.providerKey).toBe("sms24");
+    expect(session.phoneNumber).toBe("+12025550124");
+    expect(coolingProvider.inboxCallCount).toBe(0);
+  });
+
+  it("rejects new synthetic sessions when the only matching provider inbox route is cooling", async () => {
+    const provider = new ConfigurableSyntheticProvider(
+      "onlinesim",
+      "OnlineSIM Free Numbers",
+      "+12025550123",
+      1,
+    );
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    service.operationalState.recordRouteFailure(
+      {
+        providerKey: "onlinesim",
+        providerDisplayName: "OnlineSIM Free Numbers",
+        routeKind: "read-public-inbox",
+        scopeKind: "country",
+        scopeValue: "+1",
+      },
+      new Error("Cloudflare challenge page"),
+      new Date(),
+    );
+
+    await expect(service.openSession({ service: "otp" }, { costTier: "free" })).rejects.toThrow(
+      "No eligible public numbers were available for a synthetic activation session.",
+    );
+    expect(provider.inboxCallCount).toBe(0);
+  });
+
+  it("reserves a synthetic public number while its OpenAI baseline is still being read", async () => {
+    const provider = new FirstInboxReadBlockingSyntheticProvider();
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    const firstOpen = service.openSession({
+      businessKey: "openai",
+      allowReuse: false,
+      maxBindingsPerPhone: 1,
+    });
+    await provider.firstInboxStarted;
+
+    await expect(service.openSession({
+      businessKey: "openai",
+      allowReuse: false,
+      maxBindingsPerPhone: 1,
+    }, { costTier: "free" })).rejects.toThrow("No eligible public numbers were available for a synthetic activation session.");
+
+    provider.releaseFirstInboxRead();
+    await expect(firstOpen).resolves.toMatchObject({
+      id: "sms_session_000001",
+      phoneNumber: provider.number.phoneNumber,
+    });
+  });
+
+  it("hydrates active synthetic leases so restarted runtimes keep local number capacity", async () => {
+    const firstNumber = createPublicNumber("+12025550123", 1);
+    const secondNumber = createPublicNumber("+12025550124", 2);
+    const originalProvider = new MultiNumberSyntheticProvider([firstNumber, secondNumber]);
+    const original = new EasySmsService(createConfig(), [originalProvider]);
+
+    const firstSession = await original.openSession({
+      businessKey: "openai",
+      allowReuse: false,
+      maxBindingsPerPhone: 1,
+    });
+    expect(firstSession.phoneNumber).toBe(firstNumber.phoneNumber);
+
+    const restoredProvider = new MultiNumberSyntheticProvider([firstNumber, secondNumber]);
+    const restored = new EasySmsService(createConfig(), [restoredProvider]);
+    restored.hydrateRuntimeState(original.getRuntimeStateSnapshot());
+
+    const secondSession = await restored.openSession({
+      businessKey: "openai",
+      allowReuse: false,
+      maxBindingsPerPhone: 1,
+    });
+
     expect(secondSession.phoneNumber).toBe(secondNumber.phoneNumber);
     expect(secondSession.numberId).toBe(secondNumber.numberId);
   });

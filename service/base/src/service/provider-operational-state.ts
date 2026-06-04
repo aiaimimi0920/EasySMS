@@ -541,12 +541,12 @@ export class EasySmsProviderOperationalState {
       - provider.consecutiveFailures * 2;
     const notes: string[] = [];
 
-    const effectiveAvailabilityIssue = availabilityIssue?.reason;
+    const effectiveAvailabilityIssue = availabilityIssue?.reason ?? emptyDirectoryNote;
 
     if (effectiveAvailabilityIssue) {
       notes.push(effectiveAvailabilityIssue);
     }
-    if (emptyDirectoryNote) {
+    if (emptyDirectoryNote && emptyDirectoryNote !== effectiveAvailabilityIssue) {
       notes.push(emptyDirectoryNote);
     }
     if (exactRoutePenalty > 0) {
@@ -574,7 +574,7 @@ export class EasySmsProviderOperationalState {
       providerStatus: provider.status,
       healthState: provider.healthState,
       healthScore: provider.healthScore,
-      available: availabilityIssue === undefined,
+      available: availabilityIssue === undefined && emptyDirectoryNote === undefined,
       availabilityIssue: effectiveAvailabilityIssue,
       exactRoutePenalty,
       providerRoutePenalty,
