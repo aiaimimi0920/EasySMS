@@ -1889,8 +1889,19 @@ export class EasySmsService {
 
   async listSessionMessages(sessionId: string): Promise<SmsSessionMessage[]> {
     const session = this.getManagedSession(sessionId);
-    const providerMessages = await this.collectProviderMessagesForSession(session);
-    this.storeProjectedMessages(sessionId, providerMessages);
+    let providerMessages: SmsSessionMessage[];
+    try {
+      providerMessages = await this.collectProviderMessagesForSession(session);
+      this.storeProjectedMessages(sessionId, providerMessages);
+    } catch (error) {
+      if (
+        session.sessionMode !== "synthetic-public-inbox"
+        || !(error instanceof ProviderFetchError || error instanceof ProviderRouteUnavailableError)
+      ) {
+        throw error;
+      }
+      providerMessages = this.projectedMessages.get(sessionId) ?? [];
+    }
     const manualMessages = this.observedMessages.get(sessionId) ?? [];
     return this.sortSessionMessages(this.dedupeMessages([...providerMessages, ...manualMessages]), true);
   }

@@ -284,6 +284,32 @@ class ConfigurableSyntheticProvider implements SmsProvider {
   }
 }
 
+class FailingInboxSyntheticProvider implements SmsProvider {
+  inboxCallCount = 0;
+  readonly number = createPublicNumber("+12025550123", 1);
+
+  readonly descriptor: ProviderDescriptor = {
+    key: "onlinesim",
+    displayName: "OnlineSIM Free Numbers",
+    homepageUrl: "https://example.com/onlinesim",
+    sourceType: "public-web-scrape",
+    costTier: "free",
+    capabilities: ["list-public-numbers", "read-public-inbox"],
+    enabled: true,
+    countryHints: ["US"],
+    notes: [],
+  };
+
+  async listPublicNumbers(_options: ListPublicNumbersOptions): Promise<SmsPublicNumber[]> {
+    return [this.number];
+  }
+
+  async getInbox(_numberId: string): Promise<SmsInboxSnapshot> {
+    this.inboxCallCount += 1;
+    throw new Error("Failed to fetch response with curl: (35) TLS connect error: HTTP 502");
+  }
+}
+
 function createPublicNumber(phoneNumber: string, sourceIndex: number): SmsPublicNumber {
   return createPublicNumberForProvider("onlinesim", "OnlineSIM Free Numbers", phoneNumber, sourceIndex);
 }
@@ -710,6 +736,27 @@ describe("EasySms synthetic activation facade", () => {
       }),
     ]);
     expect(provider.inboxCallCount).toBe(1);
+  });
+
+  it("keeps already-open synthetic session code polling non-fatal when provider inbox fetch fails", async () => {
+    const provider = new FailingInboxSyntheticProvider();
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    const session = await service.openSession({ service: "otp" });
+    const code = await service.readSessionCode(session.id);
+
+    expect(code).toMatchObject({
+      sessionId: session.id,
+      providerKey: "onlinesim",
+      source: "none",
+      candidates: [],
+    });
+    expect(code.code).toBeUndefined();
+    expect(provider.inboxCallCount).toBe(1);
+    expect(service.listProviderHealth().find((item) => item.providerKey === "onlinesim")).toMatchObject({
+      healthState: "blocked",
+      activeRouteCoolingCount: 1,
+    });
   });
 
   it("keeps admin-style message queries cache-first unless refreshProjected is explicitly requested", async () => {
