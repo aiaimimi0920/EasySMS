@@ -1679,6 +1679,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
             penalty: { type: "number" },
             consecutiveFailures: { type: "integer" },
             cooldownUntil: { type: "string" },
+            lastHealthState: { type: "string", enum: ["unknown", "healthy", "empty", "challenge", "blocked", "degraded"] },
             lastErrorClass: { type: "string" },
             lastErrorCode: { type: "string" },
             lastErrorMessage: { type: "string" },

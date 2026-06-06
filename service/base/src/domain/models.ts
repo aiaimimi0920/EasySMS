@@ -512,6 +512,7 @@ export interface SmsProviderRouteHealthSnapshot {
   penalty: number;
   consecutiveFailures: number;
   cooldownUntil?: string;
+  lastHealthState?: SmsProviderHealthState;
   lastErrorClass?: string;
   lastErrorCode?: string;
   lastErrorMessage?: string;

@@ -196,6 +196,25 @@ function deriveStatusPenalty(
   return 0;
 }
 
+function hasActiveCooldown(route: SmsProviderRouteHealthSnapshot | undefined, now: Date): boolean {
+  const cooldownUntilMs = parseTimestampMs(route?.cooldownUntil);
+  return cooldownUntilMs !== undefined && cooldownUntilMs > now.getTime();
+}
+
+function isHealthyExactRoute(
+  route: SmsProviderRouteHealthSnapshot | undefined,
+  context: SmsProviderRouteContext,
+  now: Date,
+): boolean {
+  if (!route || context.scopeKind === "provider") {
+    return false;
+  }
+  return !hasActiveCooldown(route, now)
+    && route.lastHealthState === "healthy"
+    && route.consecutiveFailures === 0
+    && route.lastErrorClass === undefined;
+}
+
 function isTransientNetworkConnectionFailure(message: string): boolean {
   const transientMarkers = [
     "failed to connect",
@@ -476,7 +495,8 @@ export class EasySmsProviderOperationalState {
     }
 
     const exactRoute = this.routeStates.get(buildRouteKey(context));
-    if (exactRoute?.cooldownUntil && parseTimestampMs(exactRoute.cooldownUntil)! > now.getTime()) {
+    const exactRouteHealthy = isHealthyExactRoute(exactRoute, context, now);
+    if (hasActiveCooldown(exactRoute, now)) {
       return {
         providerKey: context.providerKey,
         reason: `${provider.providerDisplayName} route ${context.routeKind}:${context.scopeValue} is cooling${formatUntil(exactRoute.cooldownUntil)}.`,
@@ -491,7 +511,7 @@ export class EasySmsProviderOperationalState {
       scopeKind: "provider",
       scopeValue: "global",
     }));
-    if (providerRoute?.cooldownUntil && parseTimestampMs(providerRoute.cooldownUntil)! > now.getTime()) {
+    if (!exactRouteHealthy && hasActiveCooldown(providerRoute, now)) {
       return {
         providerKey: context.providerKey,
         reason: `${provider.providerDisplayName} route ${context.routeKind} is cooling${formatUntil(providerRoute.cooldownUntil)}.`,
@@ -512,6 +532,7 @@ export class EasySmsProviderOperationalState {
     const provider = this.ensureProviderState(context.providerKey);
     const availabilityIssue = this.getAvailabilityIssue(context, now);
     const exactRoute = this.routeStates.get(buildRouteKey(context));
+    const exactRouteHealthy = isHealthyExactRoute(exactRoute, context, now);
     const providerRoute = this.routeStates.get(buildRouteKey({
       ...context,
       scopeKind: "provider",
@@ -523,15 +544,19 @@ export class EasySmsProviderOperationalState {
       deriveErrorClassPenalty(exactRoute?.lastErrorClass),
       deriveErrorClassPenalty(providerRoute?.lastErrorClass),
     );
-    const emptyDirectoryNote = provider.healthState === "empty" && context.routeKind === "list-public-numbers"
+    const healthState = exactRouteHealthy ? "healthy" : provider.healthState;
+    const healthScore = exactRouteHealthy ? Math.max(provider.healthScore, 0.92) : provider.healthScore;
+    const emptyDirectoryNote = healthState === "empty" && context.routeKind === "list-public-numbers"
       ? `${provider.providerDisplayName} has a recent empty public number pool.`
       : undefined;
     const emptyPenalty = emptyDirectoryNote ? 85 : 0;
-    const statusPenalty = deriveStatusPenalty(provider.status, provider.healthState);
+    const statusPenalty = exactRouteHealthy && provider.status === "cooling"
+      ? 0
+      : deriveStatusPenalty(provider.status, healthState);
     const trend = this.buildProbeTrendSnapshot(context.providerKey, now);
     const trendPenalty = trend?.trendPenalty ?? 0;
     const trendScore = trend?.trendScore ?? 100;
-    const effectiveScore = Math.round(provider.healthScore * 100)
+    const effectiveScore = Math.round(healthScore * 100)
       - exactRoutePenalty
       - providerRoutePenalty
       - errorClassPenalty
@@ -572,8 +597,8 @@ export class EasySmsProviderOperationalState {
       scopeKind: context.scopeKind,
       scopeValue: context.scopeValue,
       providerStatus: provider.status,
-      healthState: provider.healthState,
-      healthScore: provider.healthScore,
+      healthState,
+      healthScore,
       available: availabilityIssue === undefined && emptyDirectoryNote === undefined,
       availabilityIssue: effectiveAvailabilityIssue,
       exactRoutePenalty,
@@ -692,6 +717,7 @@ export class EasySmsProviderOperationalState {
       penalty: 0,
       consecutiveFailures: 0,
       cooldownUntil: undefined,
+      lastHealthState: input.isEmpty ? "empty" : "healthy",
       lastErrorClass: undefined,
       lastErrorCode: undefined,
       lastErrorMessage: undefined,
@@ -755,6 +781,7 @@ export class EasySmsProviderOperationalState {
       penalty: clamp(decision.penalty + Math.max(0, consecutiveFailures - 1) * 5, 0, 95),
       consecutiveFailures,
       cooldownUntil,
+      lastHealthState: decision.healthState,
       lastErrorClass: decision.errorClass,
       lastErrorCode: decision.errorCode,
       lastErrorMessage: normalizeText(error instanceof Error ? error.message : String(error)),

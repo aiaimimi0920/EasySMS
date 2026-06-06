@@ -278,6 +278,76 @@ describe("EasySmsService health integration", () => {
     expect(plan[0]?.availabilityIssue).toContain("read-public-inbox");
   });
 
+  it("keeps a healthy country list route selectable when the provider global list route is cooling", () => {
+    const service = new EasySmsService(
+      createConfig(),
+      [
+        new FakeSmsProvider(
+          createDescriptor(),
+          async () => [{
+            providerKey: "onlinesim",
+            providerDisplayName: "Fake Provider",
+            numberId: "number-44",
+            sourceUrl: "https://example.com/number-44",
+            phoneNumber: "+440000000000",
+            countryCode: "+44",
+          }],
+          async () => ({
+            providerKey: "onlinesim",
+            providerDisplayName: "Fake Provider",
+            numberId: "number-44",
+            phoneNumber: "+440000000000",
+            sourceUrl: "https://example.com/number-44",
+            fetchedAtIso: new Date().toISOString(),
+            messages: [],
+          }),
+        ),
+      ],
+    );
+
+    service.operationalState.recordRouteSuccess({
+      providerKey: "onlinesim",
+      providerDisplayName: "Fake Provider",
+      routeKind: "list-public-numbers",
+      scopeKind: "country",
+      scopeValue: "+44",
+    }, {
+      detail: "country route has stock",
+      isEmpty: false,
+      now: new Date("2026-04-05T16:00:00.000Z"),
+    });
+    service.operationalState.recordRouteFailure(
+      {
+        providerKey: "onlinesim",
+        providerDisplayName: "Fake Provider",
+        routeKind: "list-public-numbers",
+        scopeKind: "provider",
+        scopeValue: "global",
+      },
+      new Error("timeout while listing the global directory"),
+      new Date("2026-04-05T16:01:00.000Z"),
+    );
+
+    const globalPlan = service.getListSelectionPlan({}, new Date("2026-04-05T16:02:00.000Z"));
+    expect(globalPlan[0]).toMatchObject({
+      providerKey: "onlinesim",
+      available: false,
+      healthState: "blocked",
+    });
+
+    const countryPlan = service.getListSelectionPlan(
+      { countryCode: "+44", costTier: "free" },
+      new Date("2026-04-05T16:02:00.000Z"),
+    );
+
+    expect(countryPlan[0]).toMatchObject({
+      providerKey: "onlinesim",
+      available: true,
+      healthState: "healthy",
+    });
+    expect(countryPlan[0]?.availabilityIssue).toBeUndefined();
+  });
+
   it("stops on the first successful provider in weighted-fallback mode", async () => {
     const calls: string[] = [];
     const config = {
