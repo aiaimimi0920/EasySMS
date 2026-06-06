@@ -488,6 +488,109 @@ describe("EasySmsService health integration", () => {
     });
   });
 
+  it("refreshes stale empty selection candidates even when another provider is available", async () => {
+    const calls: string[] = [];
+    const firstDescriptor = {
+      ...createDescriptor(),
+      key: "onlinesim",
+      displayName: "First Provider",
+    } satisfies ProviderDescriptor;
+    const recoveredDescriptor = {
+      ...createDescriptor(),
+      key: "receive_sms_free_cc",
+      displayName: "Recovered Provider",
+    } satisfies ProviderDescriptor;
+    const service = new EasySmsService(
+      {
+        ...createConfig(),
+        providers: {
+          ...createConfig().providers,
+          enabledProviders: ["onlinesim", "receive_sms_free_cc"],
+        },
+      },
+      [
+        new FakeSmsProvider(
+          firstDescriptor,
+          async () => [{
+            providerKey: "onlinesim",
+            providerDisplayName: "First Provider",
+            numberId: "first",
+            sourceUrl: "https://example.com/first",
+            phoneNumber: "+10000000001",
+          }],
+          async () => ({
+            providerKey: "onlinesim",
+            providerDisplayName: "First Provider",
+            numberId: "first",
+            phoneNumber: "+10000000001",
+            sourceUrl: "https://example.com/first",
+            fetchedAtIso: new Date().toISOString(),
+            messages: [],
+          }),
+        ),
+        new FakeSmsProvider(
+          recoveredDescriptor,
+          async () => {
+            calls.push("receive_sms_free_cc");
+            return [{
+              providerKey: "receive_sms_free_cc",
+              providerDisplayName: "Recovered Provider",
+              numberId: "recovered",
+              sourceUrl: "https://example.com/recovered",
+              phoneNumber: "+10000000002",
+            }];
+          },
+          async () => ({
+            providerKey: "receive_sms_free_cc",
+            providerDisplayName: "Recovered Provider",
+            numberId: "recovered",
+            phoneNumber: "+10000000002",
+            sourceUrl: "https://example.com/recovered",
+            fetchedAtIso: new Date().toISOString(),
+            messages: [],
+          }),
+        ),
+      ],
+    );
+
+    service.operationalState.recordRouteSuccess({
+      providerKey: "onlinesim",
+      providerDisplayName: "First Provider",
+      routeKind: "list-public-numbers",
+      scopeKind: "provider",
+      scopeValue: "global",
+    }, {
+      detail: "available",
+      isEmpty: false,
+      now: new Date("2026-04-05T15:00:00.000Z"),
+    });
+    service.operationalState.recordRouteSuccess({
+      providerKey: "receive_sms_free_cc",
+      providerDisplayName: "Recovered Provider",
+      routeKind: "list-public-numbers",
+      scopeKind: "provider",
+      scopeValue: "global",
+    }, {
+      detail: "stale empty",
+      isEmpty: true,
+      now: new Date("2026-04-05T16:00:00.000Z"),
+    });
+
+    const stalePlan = service.getListSelectionPlan({ costTier: "free" });
+    expect(stalePlan.find((item) => item.providerKey === "receive_sms_free_cc")).toMatchObject({
+      available: false,
+      healthState: "empty",
+    });
+
+    const refreshedPlan = await service.queryListSelectionPlan({ costTier: "free" });
+
+    expect(calls).toEqual(["receive_sms_free_cc"]);
+    expect(refreshedPlan.find((item) => item.providerKey === "receive_sms_free_cc")).toMatchObject({
+      available: true,
+      healthState: "healthy",
+    });
+  });
+
   it("uses probe trend penalties to demote unstable providers", () => {
     const firstDescriptor = {
       ...createDescriptor(),

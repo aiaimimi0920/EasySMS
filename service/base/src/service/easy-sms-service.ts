@@ -815,7 +815,11 @@ export class EasySmsService {
     now: Date = new Date(),
   ): Promise<SmsProviderSelectionCandidate[]> {
     const initial = this.getListSelectionPlan(options, now);
-    if (initial.some((candidate) => candidate.available)) {
+    if (!initial.some((candidate) => (
+      candidate.routeKind === "list-public-numbers"
+      && candidate.healthState === "empty"
+      && candidate.emptyPenalty > 0
+    ))) {
       return initial;
     }
 
