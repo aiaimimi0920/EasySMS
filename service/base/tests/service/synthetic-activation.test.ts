@@ -450,6 +450,24 @@ describe("EasySms synthetic activation facade", () => {
     expect(session.numberId).toBe(usableNumber.numberId);
   });
 
+  it("does not mark a provider empty when caller phoneBlacklist rejects every listed public number", async () => {
+    const rejectedNumber = createPublicNumber("+12025550123", 1);
+    const provider = new MultiNumberSyntheticProvider([rejectedNumber]);
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    await expect(service.openSession({
+      service: "otp",
+      phoneBlacklist: [rejectedNumber.phoneNumber],
+    }, { providerKey: "onlinesim", costTier: "free" })).rejects.toThrow(
+      "No eligible public numbers were available for a synthetic activation session.",
+    );
+
+    const candidate = service.getListSelectionPlan({ costTier: "free" })
+      .find((item) => item.providerKey === "onlinesim");
+    expect(candidate?.healthState).toBe("healthy");
+    expect(candidate?.available).toBe(true);
+  });
+
   it("rejects an explicit public number when the caller blacklists its phone", async () => {
     const rejectedNumber = createPublicNumber("+12025550123", 1);
     const provider = new MultiNumberSyntheticProvider([rejectedNumber]);

@@ -2829,7 +2829,7 @@ export class EasySmsService {
                   ? "Provider returned only locally unusable public numbers."
                 : "Provider responded but returned no public numbers.",
               itemCount: usableProviderItems.length,
-              isEmpty: usableProviderItems.length === 0,
+              isEmpty: providerItems.length === 0,
             });
             return {
               providerKey: provider.descriptor.key,
@@ -3144,7 +3144,7 @@ export class EasySmsService {
               ? "Selection refresh found only locally unusable public numbers."
               : "Selection refresh found no public numbers.",
           itemCount: usableItems.length,
-          isEmpty: usableItems.length === 0,
+          isEmpty: providerItems.length === 0,
           now,
         });
       } catch (error) {
@@ -3745,7 +3745,7 @@ export class EasySmsService {
               ? "Synthetic activation found only locally unusable public numbers on this provider."
             : "Synthetic activation found no public numbers on this provider.",
           itemCount: usableItems.length,
-          isEmpty: usableItems.length === 0,
+          isEmpty: items.length === 0,
         });
         if (usableItems.length > 0) {
           this.rememberIssuedPublicNumbers(usableItems);
