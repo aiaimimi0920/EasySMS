@@ -187,6 +187,10 @@ describe("EasySms session-centric native routes", () => {
         selectionPlanCalls.push(options);
         return [];
       },
+      queryListSelectionPlan: async (options: Record<string, unknown>) => {
+        selectionPlanCalls.push(options);
+        return [];
+      },
       probeProvider: async (providerKey: string) => ({
         providerKey,
         providerDisplayName: "OnlineSIM Free Numbers",

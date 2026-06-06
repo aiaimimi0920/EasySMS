@@ -810,6 +810,19 @@ export class EasySmsService {
     return typeof limit === "number" ? ranked.slice(0, limit) : ranked;
   }
 
+  async queryListSelectionPlan(
+    options: Pick<ListPublicNumbersOptions, "countryCode" | "countryName" | "providerKey" | "costTier" | "limit"> = {},
+    now: Date = new Date(),
+  ): Promise<SmsProviderSelectionCandidate[]> {
+    const initial = this.getListSelectionPlan(options, now);
+    if (initial.some((candidate) => candidate.available)) {
+      return initial;
+    }
+
+    await this.refreshEmptyListSelectionCandidates(initial, options, now);
+    return this.getListSelectionPlan(options, new Date());
+  }
+
   getAvailableActivationProviders(filters: { costTier?: CostTier } = {}): ProviderDescriptor[] {
     return this.listProviders({ ...filters, capability: "create-activation" });
   }
@@ -3084,6 +3097,60 @@ export class EasySmsService {
         provider: this.providers.get(candidate.providerKey),
       }))
       .filter((item): item is { provider: SmsProvider; candidate: SmsProviderSelectionCandidate } => item.provider !== undefined);
+  }
+
+  private async refreshEmptyListSelectionCandidates(
+    candidates: SmsProviderSelectionCandidate[],
+    options: Pick<ListPublicNumbersOptions, "countryCode" | "countryName" | "costTier">,
+    now: Date,
+  ): Promise<void> {
+    const emptyCandidates = candidates.filter((candidate) => (
+      candidate.routeKind === "list-public-numbers"
+      && candidate.healthState === "empty"
+      && candidate.emptyPenalty > 0
+    ));
+    if (emptyCandidates.length === 0) {
+      return;
+    }
+
+    await Promise.allSettled(emptyCandidates.map(async (candidate) => {
+      const provider = this.providers.get(candidate.providerKey);
+      if (!provider || !this.matchesListCostTier(provider.descriptor, options.costTier)) {
+        return;
+      }
+
+      const context = this.buildListRouteContext(provider, {
+        countryCode: options.countryCode,
+        countryName: options.countryName,
+      });
+      const availabilityIssue = this.operationalState.getAvailabilityIssue(context, now);
+      if (availabilityIssue) {
+        return;
+      }
+
+      try {
+        const providerItems = await provider.listPublicNumbers({
+          providerKey: provider.descriptor.key,
+          countryCode: options.countryCode,
+          countryName: options.countryName,
+          costTier: options.costTier,
+          limit: this.config.scraping.maxNumbersPerProvider,
+        });
+        const usableItems = this.filterUsablePublicNumbers(providerItems);
+        this.operationalState.recordRouteSuccess(context, {
+          detail: usableItems.length > 0
+            ? `Selection refresh retrieved ${usableItems.length} usable public numbers.`
+            : providerItems.length > 0
+              ? "Selection refresh found only locally unusable public numbers."
+              : "Selection refresh found no public numbers.",
+          itemCount: usableItems.length,
+          isEmpty: usableItems.length === 0,
+          now,
+        });
+      } catch (error) {
+        this.operationalState.recordRouteFailure(context, error, now);
+      }
+    }));
   }
 
   private ensureProviderKeyExists(providerKey: string): void {

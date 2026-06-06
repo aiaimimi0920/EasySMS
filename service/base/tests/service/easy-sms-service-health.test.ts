@@ -427,6 +427,67 @@ describe("EasySmsService health integration", () => {
     expect(calls).toEqual(["onlinesim"]);
   });
 
+  it("refreshes empty selection candidates when no providers are currently available", async () => {
+    let listCalls = 0;
+    const service = new EasySmsService(
+      createConfig(),
+      [
+        new FakeSmsProvider(
+          createDescriptor(),
+          async (options) => {
+            listCalls += 1;
+            expect(options.countryCode).toBe("+1");
+            return [{
+              providerKey: "onlinesim",
+              providerDisplayName: "Fake Provider",
+              numberId: "number-1",
+              sourceUrl: "https://example.com/number",
+              phoneNumber: "+10000000000",
+              countryCode: "+1",
+            }];
+          },
+          async () => ({
+            providerKey: "onlinesim",
+            providerDisplayName: "Fake Provider",
+            numberId: "number-1",
+            phoneNumber: "+10000000000",
+            sourceUrl: "https://example.com/number",
+            fetchedAtIso: new Date().toISOString(),
+            messages: [],
+          }),
+        ),
+      ],
+    );
+
+    service.operationalState.recordRouteSuccess({
+      providerKey: "onlinesim",
+      providerDisplayName: "Fake Provider",
+      routeKind: "list-public-numbers",
+      scopeKind: "country",
+      scopeValue: "+1",
+    }, {
+      detail: "recent empty",
+      isEmpty: true,
+      now: new Date("2026-04-05T16:00:00.000Z"),
+    });
+
+    const stalePlan = service.getListSelectionPlan({ countryCode: "+1", costTier: "free" });
+    expect(stalePlan[0]).toMatchObject({
+      providerKey: "onlinesim",
+      available: false,
+      healthState: "empty",
+    });
+
+    const refreshedPlan = await service.queryListSelectionPlan({ countryCode: "+1", costTier: "free" });
+
+    expect(listCalls).toBe(1);
+    expect(refreshedPlan[0]).toMatchObject({
+      providerKey: "onlinesim",
+      available: true,
+      healthState: "healthy",
+    });
+  });
+
   it("uses probe trend penalties to demote unstable providers", () => {
     const firstDescriptor = {
       ...createDescriptor(),

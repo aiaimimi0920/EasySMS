@@ -123,11 +123,11 @@ export class EasySmsHttpHandler {
     };
   }
 
-  public queryProviderSelectionPlan(options: Pick<ListPublicNumbersOptions, "countryCode" | "countryName" | "providerKey" | "costTier" | "limit"> = {}) {
+  public async queryProviderSelectionPlan(options: Pick<ListPublicNumbersOptions, "countryCode" | "countryName" | "providerKey" | "costTier" | "limit"> = {}) {
     return {
       strategyModeId: this.service.config.strategy.providerStrategyModeId,
       routeKind: "list-public-numbers",
-      candidates: this.service.getListSelectionPlan(options),
+      candidates: await this.service.queryListSelectionPlan(options),
     };
   }
 
