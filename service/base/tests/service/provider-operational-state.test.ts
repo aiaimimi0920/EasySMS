@@ -108,6 +108,113 @@ describe("EasySmsProviderOperationalState", () => {
     expect(trend?.trendPenalty).toBeGreaterThan(0);
   });
 
+  it("marks list candidates unavailable when recent probe trend is dominated by empty directories", () => {
+    const state = new EasySmsProviderOperationalState([descriptor], {
+      probeHistoryMaxEntries: 20,
+      probeHistoryWindowMs: 24 * 60 * 60 * 1000,
+    });
+    const context = {
+      providerKey: descriptor.key,
+      providerDisplayName: descriptor.displayName,
+      routeKind: "list-public-numbers" as const,
+      scopeKind: "provider" as const,
+      scopeValue: "global",
+    };
+
+    state.recordRouteSuccess(context, {
+      detail: "A single latest refresh found one usable public number.",
+      itemCount: 1,
+      isEmpty: false,
+      now: new Date("2026-04-05T13:00:00.000Z"),
+    });
+
+    for (let index = 0; index < 19; index += 1) {
+      state.recordProbeResult({
+        providerKey: descriptor.key,
+        providerDisplayName: descriptor.displayName,
+        ok: true,
+        status: "active",
+        healthState: "empty",
+        healthScore: 1,
+        routeKind: "list-public-numbers",
+        checkedAt: new Date(Date.UTC(2026, 3, 5, 12, index)).toISOString(),
+        detail: "probe found no public numbers",
+      });
+    }
+    state.recordProbeResult({
+      providerKey: descriptor.key,
+      providerDisplayName: descriptor.displayName,
+      ok: true,
+      status: "active",
+      healthState: "healthy",
+      healthScore: 1,
+      routeKind: "list-public-numbers",
+      checkedAt: "2026-04-05T12:59:00.000Z",
+      detail: "probe found one usable public number",
+    });
+
+    const candidate = state.getSelectionCandidate(context, new Date("2026-04-05T13:01:00.000Z"));
+
+    expect(candidate.healthState).toBe("healthy");
+    expect(candidate.available).toBe(false);
+    expect(candidate.availabilityIssue).toContain("mostly empty");
+    expect(candidate.notes).toEqual(expect.arrayContaining([
+      expect.stringContaining("mostly empty"),
+    ]));
+  });
+
+  it("keeps a healthy exact country list route available despite a provider-level empty trend", () => {
+    const state = new EasySmsProviderOperationalState([descriptor], {
+      probeHistoryMaxEntries: 20,
+      probeHistoryWindowMs: 24 * 60 * 60 * 1000,
+    });
+    const context = {
+      providerKey: descriptor.key,
+      providerDisplayName: descriptor.displayName,
+      routeKind: "list-public-numbers" as const,
+      scopeKind: "country" as const,
+      scopeValue: "+1",
+    };
+
+    state.recordRouteSuccess(context, {
+      detail: "Country-specific refresh found usable public numbers.",
+      itemCount: 2,
+      isEmpty: false,
+      now: new Date("2026-04-05T13:00:00.000Z"),
+    });
+
+    for (let index = 0; index < 19; index += 1) {
+      state.recordProbeResult({
+        providerKey: descriptor.key,
+        providerDisplayName: descriptor.displayName,
+        ok: true,
+        status: "active",
+        healthState: "empty",
+        healthScore: 1,
+        routeKind: "list-public-numbers",
+        checkedAt: new Date(Date.UTC(2026, 3, 5, 12, index)).toISOString(),
+        detail: "provider-level probe found no public numbers",
+      });
+    }
+    state.recordProbeResult({
+      providerKey: descriptor.key,
+      providerDisplayName: descriptor.displayName,
+      ok: true,
+      status: "active",
+      healthState: "healthy",
+      healthScore: 1,
+      routeKind: "list-public-numbers",
+      checkedAt: "2026-04-05T12:59:00.000Z",
+      detail: "provider-level probe found one usable public number",
+    });
+
+    const candidate = state.getSelectionCandidate(context, new Date("2026-04-05T13:01:00.000Z"));
+
+    expect(candidate.healthState).toBe("healthy");
+    expect(candidate.available).toBe(true);
+    expect(candidate.availabilityIssue).toBeUndefined();
+  });
+
   it("marks empty list candidates unavailable with a penalty", () => {
     const state = new EasySmsProviderOperationalState([descriptor]);
     const context = {

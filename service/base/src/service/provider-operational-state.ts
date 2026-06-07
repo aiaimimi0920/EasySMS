@@ -196,6 +196,24 @@ function deriveStatusPenalty(
   return 0;
 }
 
+function buildUnproductiveListTrendIssue(
+  provider: SmsProviderHealthSnapshot,
+  context: SmsProviderRouteContext,
+  trend: SmsProviderProbeTrendSnapshot | undefined,
+): string | undefined {
+  if (context.routeKind !== "list-public-numbers" || !trend || trend.sampleCount < 5) {
+    return undefined;
+  }
+
+  const emptyRatio = trend.emptyCount / trend.sampleCount;
+  const maxLowSuccessCount = Math.max(1, Math.floor(trend.sampleCount * 0.15));
+  if (trend.emptyCount < 4 || emptyRatio < 0.8 || trend.successCount > maxLowSuccessCount) {
+    return undefined;
+  }
+
+  return `${provider.providerDisplayName} recent probe trend is mostly empty (${trend.emptyCount}/${trend.sampleCount} recent probes returned no public numbers).`;
+}
+
 function hasActiveCooldown(route: SmsProviderRouteHealthSnapshot | undefined, now: Date): boolean {
   const cooldownUntilMs = parseTimestampMs(route?.cooldownUntil);
   return cooldownUntilMs !== undefined && cooldownUntilMs > now.getTime();
@@ -556,6 +574,9 @@ export class EasySmsProviderOperationalState {
     const trend = this.buildProbeTrendSnapshot(context.providerKey, now);
     const trendPenalty = trend?.trendPenalty ?? 0;
     const trendScore = trend?.trendScore ?? 100;
+    const trendAvailabilityIssue = exactRouteHealthy
+      ? undefined
+      : buildUnproductiveListTrendIssue(provider, context, trend);
     const effectiveScore = Math.round(healthScore * 100)
       - exactRoutePenalty
       - providerRoutePenalty
@@ -566,13 +587,16 @@ export class EasySmsProviderOperationalState {
       - provider.consecutiveFailures * 2;
     const notes: string[] = [];
 
-    const effectiveAvailabilityIssue = availabilityIssue?.reason ?? emptyDirectoryNote;
+    const effectiveAvailabilityIssue = availabilityIssue?.reason ?? emptyDirectoryNote ?? trendAvailabilityIssue;
 
     if (effectiveAvailabilityIssue) {
       notes.push(effectiveAvailabilityIssue);
     }
     if (emptyDirectoryNote && emptyDirectoryNote !== effectiveAvailabilityIssue) {
       notes.push(emptyDirectoryNote);
+    }
+    if (trendAvailabilityIssue && trendAvailabilityIssue !== effectiveAvailabilityIssue) {
+      notes.push(trendAvailabilityIssue);
     }
     if (exactRoutePenalty > 0) {
       notes.push(`exact route penalty=${exactRoutePenalty}`);
@@ -599,7 +623,7 @@ export class EasySmsProviderOperationalState {
       providerStatus: provider.status,
       healthState,
       healthScore,
-      available: availabilityIssue === undefined && emptyDirectoryNote === undefined,
+      available: availabilityIssue === undefined && emptyDirectoryNote === undefined && trendAvailabilityIssue === undefined,
       availabilityIssue: effectiveAvailabilityIssue,
       exactRoutePenalty,
       providerRoutePenalty,
