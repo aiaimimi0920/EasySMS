@@ -624,6 +624,8 @@ export interface ListPublicNumbersOptions {
   countryCode?: string;
   countryName?: string;
   costTier?: CostTier;
+  phoneBlacklist?: string[];
+  allowReuse?: boolean;
 }
 
 export interface GetInboxOptions {

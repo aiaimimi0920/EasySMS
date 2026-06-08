@@ -284,6 +284,44 @@ class ConfigurableSyntheticProvider implements SmsProvider {
   }
 }
 
+class CountryFilteredSyntheticProvider implements SmsProvider {
+  readonly descriptor: ProviderDescriptor = {
+    key: "onlinesim",
+    displayName: "OnlineSIM Free Numbers",
+    homepageUrl: "https://example.com/onlinesim",
+    sourceType: "public-web-scrape",
+    costTier: "free",
+    capabilities: ["list-public-numbers", "read-public-inbox"],
+    enabled: true,
+    countryHints: ["US"],
+    notes: [],
+  };
+
+  public constructor(private readonly numbers: SmsPublicNumber[]) {}
+
+  async listPublicNumbers(options: ListPublicNumbersOptions): Promise<SmsPublicNumber[]> {
+    if (!options.countryCode) {
+      return this.numbers;
+    }
+    return this.numbers.filter((number) => number.countryCode === options.countryCode);
+  }
+
+  async getInbox(numberId: string): Promise<SmsInboxSnapshot> {
+    const matched = this.numbers.find((number) => number.numberId === numberId) ?? this.numbers[0]!;
+    return {
+      providerKey: matched.providerKey,
+      providerDisplayName: matched.providerDisplayName,
+      numberId,
+      phoneNumber: matched.phoneNumber,
+      sourceUrl: matched.sourceUrl,
+      countryCode: matched.countryCode,
+      countryName: matched.countryName,
+      fetchedAtIso: "2026-05-12T12:00:00.000Z",
+      messages: [],
+    };
+  }
+}
+
 class FailingInboxSyntheticProvider implements SmsProvider {
   inboxCallCount = 0;
   readonly number = createPublicNumber("+12025550123", 1);
@@ -466,6 +504,39 @@ describe("EasySms synthetic activation facade", () => {
       .find((item) => item.providerKey === "onlinesim");
     expect(candidate?.healthState).toBe("healthy");
     expect(candidate?.available).toBe(true);
+  });
+
+  it("marks request-scoped selection candidates unavailable when caller phoneBlacklist rejects every listed public number", async () => {
+    const rejectedNumber = createPublicNumber("+12025550123", 1);
+    const provider = new MultiNumberSyntheticProvider([rejectedNumber]);
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    const candidates = await service.queryListSelectionPlan({
+      costTier: "free",
+      countryCode: "+1",
+      phoneBlacklist: [rejectedNumber.phoneNumber],
+      allowReuse: false,
+    } as ListPublicNumbersOptions & { phoneBlacklist: string[]; allowReuse: boolean });
+
+    expect(candidates[0]?.providerKey).toBe("onlinesim");
+    expect(candidates[0]?.available).toBe(false);
+    expect(candidates[0]?.availabilityIssue).toContain("No request-eligible public numbers");
+    expect(service.listProviderHealth()[0]?.healthState).toBe("healthy");
+  });
+
+  it("refreshes country-scoped selection candidates before reporting them available", async () => {
+    const usNumber = createPublicNumber("+12025550123", 1);
+    const provider = new CountryFilteredSyntheticProvider([usNumber]);
+    const service = new EasySmsService(createConfig(), [provider]);
+
+    const candidates = await service.queryListSelectionPlan({
+      costTier: "free",
+      countryCode: "+44",
+    });
+
+    expect(candidates[0]?.providerKey).toBe("onlinesim");
+    expect(candidates[0]?.available).toBe(false);
+    expect(candidates[0]?.healthState).toBe("empty");
   });
 
   it("rejects an explicit public number when the caller blacklists its phone", async () => {

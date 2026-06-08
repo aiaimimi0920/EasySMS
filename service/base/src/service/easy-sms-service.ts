@@ -133,6 +133,11 @@ interface SmsTargetHint {
   businessKey?: string;
 }
 
+interface RequestScopedListAvailability {
+  itemCount: number;
+  usableCount: number;
+}
+
 function isOpenAiSmsTarget(input: SmsTargetHint): boolean {
   const target = normalizeText(`${input.service ?? ""} ${input.businessKey ?? ""}`).toLowerCase();
   return /\b(openai|chatgpt|codex)\b/.test(target);
@@ -774,7 +779,7 @@ export class EasySmsService {
   }
 
   getListSelectionPlan(
-    options: Pick<ListPublicNumbersOptions, "countryCode" | "countryName" | "providerKey" | "costTier" | "limit"> = {},
+    options: ListPublicNumbersOptions = {},
     now: Date = new Date(),
   ): SmsProviderSelectionCandidate[] {
     const limit = options.limit;
@@ -811,20 +816,15 @@ export class EasySmsService {
   }
 
   async queryListSelectionPlan(
-    options: Pick<ListPublicNumbersOptions, "countryCode" | "countryName" | "providerKey" | "costTier" | "limit"> = {},
+    options: ListPublicNumbersOptions = {},
     now: Date = new Date(),
   ): Promise<SmsProviderSelectionCandidate[]> {
     const initial = this.getListSelectionPlan(options, now);
-    if (!initial.some((candidate) => (
-      candidate.routeKind === "list-public-numbers"
-      && candidate.healthState === "empty"
-      && candidate.emptyPenalty > 0
-    ))) {
-      return initial;
-    }
-
-    await this.refreshEmptyListSelectionCandidates(initial, options, now);
-    return this.getListSelectionPlan(options, new Date());
+    const requestAvailability = await this.refreshListSelectionCandidates(initial, options, now);
+    const refreshed = requestAvailability.size > 0
+      ? this.getListSelectionPlan(options, new Date())
+      : initial;
+    return this.applyRequestScopedListAvailability(refreshed, requestAvailability, options);
   }
 
   getAvailableActivationProviders(filters: { costTier?: CostTier } = {}): ProviderDescriptor[] {
@@ -2803,6 +2803,7 @@ export class EasySmsService {
     const batchSize = strategyModeId === "weighted-fallback" ? 1 : 3;
     const items = [];
     const errors = [];
+    const phoneBlacklistLookupKeys = buildPhoneBlacklistLookupKeys(options.phoneBlacklist);
 
     for (let index = 0; index < orderedProviders.length; index += batchSize) {
       const batch = orderedProviders.slice(index, index + batchSize);
@@ -2825,7 +2826,10 @@ export class EasySmsService {
               ...options,
               limit: providerLimit,
             });
-            const usableProviderItems = this.filterUsablePublicNumbers(providerItems);
+            const usableProviderItems = this.filterUsablePublicNumbers(providerItems, {
+              allowActiveLeaseReuse: options.allowReuse !== false,
+              phoneBlacklistLookupKeys,
+            });
             this.operationalState.recordRouteSuccess(context, {
               detail: usableProviderItems.length > 0
                 ? `Retrieved ${usableProviderItems.length} usable public numbers.`
@@ -3075,7 +3079,7 @@ export class EasySmsService {
   }
 
   private resolveProvidersForList(
-    options: Pick<ListPublicNumbersOptions, "providerKey" | "countryCode" | "countryName" | "costTier">,
+    options: ListPublicNumbersOptions,
     now: Date = new Date(),
   ): Array<{ provider: SmsProvider; candidate: SmsProviderSelectionCandidate }> {
     if (options.providerKey) {
@@ -3103,21 +3107,65 @@ export class EasySmsService {
       .filter((item): item is { provider: SmsProvider; candidate: SmsProviderSelectionCandidate } => item.provider !== undefined);
   }
 
-  private async refreshEmptyListSelectionCandidates(
-    candidates: SmsProviderSelectionCandidate[],
-    options: Pick<ListPublicNumbersOptions, "countryCode" | "countryName" | "costTier">,
+  private hasListRouteSnapshot(
+    provider: SmsProvider,
+    options: Pick<ListPublicNumbersOptions, "countryCode" | "countryName">,
     now: Date,
-  ): Promise<void> {
-    const emptyCandidates = candidates.filter((candidate) => (
-      candidate.routeKind === "list-public-numbers"
-      && candidate.healthState === "empty"
-      && candidate.emptyPenalty > 0
+  ): boolean {
+    const context = this.buildListRouteContext(provider, options);
+    const scopeValue = normalizeText(context.scopeValue).toLowerCase();
+    return this.operationalState.listRouteHealth(provider.descriptor.key, now).some((route) => (
+      route.routeKind === context.routeKind
+      && route.scopeKind === context.scopeKind
+      && normalizeText(route.scopeValue).toLowerCase() === scopeValue
     ));
-    if (emptyCandidates.length === 0) {
-      return;
+  }
+
+  private hasRequestScopedListFilters(options: Pick<ListPublicNumbersOptions, "phoneBlacklist" | "allowReuse">): boolean {
+    return Boolean(options.phoneBlacklist?.length) || options.allowReuse === false;
+  }
+
+  private shouldRefreshListSelectionCandidate(
+    provider: SmsProvider,
+    candidate: SmsProviderSelectionCandidate,
+    options: ListPublicNumbersOptions,
+    now: Date,
+  ): boolean {
+    if (candidate.routeKind !== "list-public-numbers") {
+      return false;
+    }
+    if (candidate.healthState === "empty" && candidate.emptyPenalty > 0) {
+      return true;
+    }
+    if (this.hasRequestScopedListFilters(options)) {
+      return true;
+    }
+    if ((options.countryCode || options.countryName) && candidate.available) {
+      return !this.hasListRouteSnapshot(provider, options, now);
+    }
+    return false;
+  }
+
+  private async refreshListSelectionCandidates(
+    candidates: SmsProviderSelectionCandidate[],
+    options: ListPublicNumbersOptions,
+    now: Date,
+  ): Promise<Map<string, RequestScopedListAvailability>> {
+    const availabilityByProvider = new Map<string, RequestScopedListAvailability>();
+    const refreshCandidates = candidates.filter((candidate) => {
+      const provider = this.providers.get(candidate.providerKey);
+      return Boolean(
+        provider
+        && this.matchesListCostTier(provider.descriptor, options.costTier)
+        && this.shouldRefreshListSelectionCandidate(provider, candidate, options, now),
+      );
+    });
+    if (refreshCandidates.length === 0) {
+      return availabilityByProvider;
     }
 
-    await Promise.allSettled(emptyCandidates.map(async (candidate) => {
+    const phoneBlacklistLookupKeys = buildPhoneBlacklistLookupKeys(options.phoneBlacklist);
+    await Promise.allSettled(refreshCandidates.map(async (candidate) => {
       const provider = this.providers.get(candidate.providerKey);
       if (!provider || !this.matchesListCostTier(provider.descriptor, options.costTier)) {
         return;
@@ -3140,7 +3188,14 @@ export class EasySmsService {
           costTier: options.costTier,
           limit: this.config.scraping.maxNumbersPerProvider,
         });
-        const usableItems = this.filterUsablePublicNumbers(providerItems);
+        const usableItems = this.filterUsablePublicNumbers(providerItems, {
+          allowActiveLeaseReuse: options.allowReuse !== false,
+          phoneBlacklistLookupKeys,
+        });
+        availabilityByProvider.set(provider.descriptor.key, {
+          itemCount: providerItems.length,
+          usableCount: usableItems.length,
+        });
         this.operationalState.recordRouteSuccess(context, {
           detail: usableItems.length > 0
             ? `Selection refresh retrieved ${usableItems.length} usable public numbers.`
@@ -3155,6 +3210,33 @@ export class EasySmsService {
         this.operationalState.recordRouteFailure(context, error, now);
       }
     }));
+    return availabilityByProvider;
+  }
+
+  private applyRequestScopedListAvailability(
+    candidates: SmsProviderSelectionCandidate[],
+    availabilityByProvider: Map<string, RequestScopedListAvailability>,
+    options: Pick<ListPublicNumbersOptions, "phoneBlacklist" | "allowReuse">,
+  ): SmsProviderSelectionCandidate[] {
+    if (!this.hasRequestScopedListFilters(options)) {
+      return candidates;
+    }
+
+    const requestUnavailableReason = "No request-eligible public numbers were available for current selection filters.";
+    return candidates.map((candidate) => {
+      const availability = availabilityByProvider.get(candidate.providerKey);
+      if (!availability || availability.usableCount > 0) {
+        return candidate;
+      }
+      return {
+        ...candidate,
+        available: false,
+        availabilityIssue: candidate.availabilityIssue ?? requestUnavailableReason,
+        notes: candidate.notes.includes(requestUnavailableReason)
+          ? candidate.notes
+          : [...candidate.notes, requestUnavailableReason],
+      };
+    });
   }
 
   private ensureProviderKeyExists(providerKey: string): void {

@@ -61,6 +61,14 @@ export const EASY_SMS_HTTP_ROUTES = {
 export function parseListPublicNumbersOptions(url: URL): ListPublicNumbersOptions {
   const limitParam = url.searchParams.get("limit");
   const limit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
+  const rawPhoneBlacklist = [
+    ...url.searchParams.getAll("phoneBlacklist"),
+    ...url.searchParams.getAll("phoneBlacklist[]"),
+  ];
+  const phoneBlacklist = rawPhoneBlacklist
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
 
   if (limitParam && (!Number.isFinite(limit) || limit <= 0)) {
     throw new ValidationError("limit must be a positive integer.");
@@ -72,6 +80,8 @@ export function parseListPublicNumbersOptions(url: URL): ListPublicNumbersOption
     countryCode: url.searchParams.get("countryCode") ?? undefined,
     countryName: url.searchParams.get("countryName") ?? undefined,
     costTier: parseCostTier(url.searchParams.get("costTier")),
+    phoneBlacklist: phoneBlacklist.length > 0 ? phoneBlacklist : undefined,
+    allowReuse: parseBooleanQuery(url.searchParams.get("allowReuse")),
   };
 }
 
