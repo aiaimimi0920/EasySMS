@@ -665,6 +665,7 @@ export interface EasySmsRuntimeConfig {
   };
   scraping: {
     requestTimeoutMs: number;
+    providerRequestTimeoutMs?: Partial<Record<SmsProviderKey, number>>;
     maxNumbersPerProvider: number;
     userAgent: string;
   };

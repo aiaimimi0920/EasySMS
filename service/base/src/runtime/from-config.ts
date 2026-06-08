@@ -15,6 +15,30 @@ function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function asFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function asNumberMap(value: unknown, fallback: Partial<Record<string, number>>): Partial<Record<string, number>> {
+  const source = asRecord(value);
+  const merged: Partial<Record<string, number>> = { ...fallback };
+  for (const [key, rawValue] of Object.entries(source)) {
+    const normalizedKey = key.trim();
+    const parsed = asFiniteNumber(rawValue);
+    if (normalizedKey && parsed !== undefined && parsed > 0) {
+      merged[normalizedKey] = parsed;
+    }
+  }
+  return merged;
+}
+
 function asBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -88,6 +112,10 @@ export function mergeEasySmsConfig(input: unknown): EasySmsRuntimeConfig {
       requestTimeoutMs: asNumber(
         scraping.requestTimeoutMs,
         defaultEasySmsRuntimeConfig.scraping.requestTimeoutMs,
+      ),
+      providerRequestTimeoutMs: asNumberMap(
+        scraping.providerRequestTimeoutMs,
+        defaultEasySmsRuntimeConfig.scraping.providerRequestTimeoutMs ?? {},
       ),
       maxNumbersPerProvider: asNumber(
         scraping.maxNumbersPerProvider,

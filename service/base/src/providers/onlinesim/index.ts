@@ -6,7 +6,13 @@ import type {
   SmsInboxSnapshot,
   SmsPublicNumber,
 } from "../../domain/models.js";
-import { decodeNumberId, encodeNumberId, fetchJsonValue, matchesCountryFilter } from "../../shared/index.js";
+import {
+  decodeNumberId,
+  encodeNumberId,
+  fetchJsonValue,
+  matchesCountryFilter,
+  withProviderRequestTimeout,
+} from "../../shared/index.js";
 import type { SmsProvider } from "../contracts.js";
 
 const providerApiUrl = "https://onlinesim.io/api/getFreeList";
@@ -109,7 +115,11 @@ export class OnlineSimProvider implements SmsProvider {
     ],
   };
 
-  constructor(private readonly config: EasySmsRuntimeConfig) {}
+  private readonly config: EasySmsRuntimeConfig;
+
+  constructor(config: EasySmsRuntimeConfig) {
+    this.config = withProviderRequestTimeout(config, this.descriptor.key);
+  }
 
   async listPublicNumbers(options: ListPublicNumbersOptions): Promise<SmsPublicNumber[]> {
     const countries = (await this.fetchCatalog()).filter((country) =>

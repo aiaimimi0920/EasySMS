@@ -76,4 +76,22 @@ describe("runtime config merge", () => {
       terminalOutcomeCooldownSeconds: 1800,
     });
   });
+
+  it("merges provider-specific scraping timeout overrides from config", () => {
+    const config = mergeEasySmsConfig({
+      scraping: {
+        providerRequestTimeoutMs: {
+          smstome: 90_000,
+          receive_smss: 45_000,
+          onlinesim: 12_000,
+        },
+      },
+    });
+
+    expect(config.scraping.providerRequestTimeoutMs).toMatchObject({
+      smstome: 90_000,
+      receive_smss: 45_000,
+      onlinesim: 12_000,
+    });
+  });
 });

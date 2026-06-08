@@ -8,7 +8,13 @@ import type {
 } from "../../domain/models.js";
 import type { SmsProvider } from "../contracts.js";
 import { load } from "cheerio";
-import { inferCountryCode, matchesCountryFilter, normalizeText, resolveAbsoluteUrl } from "../../shared/index.js";
+import {
+  inferCountryCode,
+  matchesCountryFilter,
+  normalizeText,
+  resolveAbsoluteUrl,
+  withProviderRequestTimeout,
+} from "../../shared/index.js";
 import { TempLikeProvider } from "../shared/temp-like-provider.js";
 import {
   fetchReceiveSmsFreeCcHtml,
@@ -43,9 +49,11 @@ const descriptor: ProviderDescriptor = {
 export class ReceiveSmsFreeCcProvider implements SmsProvider {
   readonly descriptor = descriptor;
   private readonly baseProvider: TempLikeProvider;
+  private readonly config: EasySmsRuntimeConfig;
 
-  public constructor(private readonly config: EasySmsRuntimeConfig) {
-    this.baseProvider = new TempLikeProvider(config, {
+  public constructor(config: EasySmsRuntimeConfig) {
+    this.config = withProviderRequestTimeout(config, descriptor.key);
+    this.baseProvider = new TempLikeProvider(this.config, {
       descriptor,
       fetchMode: "html",
       listUrl: receiveSmsFreeCcHomepageUrl,
@@ -53,8 +61,8 @@ export class ReceiveSmsFreeCcProvider implements SmsProvider {
       documentFetcher: async (url) => load(
         await fetchReceiveSmsFreeCcHtml(
           url,
-          config,
-          resolveReceiveSmsFreeCcAuthConfig(config),
+          this.config,
+          resolveReceiveSmsFreeCcAuthConfig(this.config),
         ),
       ),
     });

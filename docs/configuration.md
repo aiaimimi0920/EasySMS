@@ -60,6 +60,20 @@ They are derived from the enabled free providers that already support:
 - `list-public-numbers`
 - `read-public-inbox`
 
+Within `serviceBase.runtime.scraping`, `providerRequestTimeoutMs` can force a
+different request timeout per provider. Values are milliseconds. The built-in
+defaults intentionally give slower login-backed sources more time than the
+global `requestTimeoutMs`:
+
+- `smstome`: `75000`
+- `receive_smss`: `30000`
+- `receive_sms_free_cc`: `30000`
+- `sms24` / `yunduanxin`: `20000`
+- `onlinesim` / `hero_sms`: `15000`
+
+This keeps the global default short while allowing slow-but-usable providers
+such as SMSToMe to finish selection-plan refreshes.
+
 ### `publishing.ghcr`
 
 Holds publication metadata for GHCR-oriented workflows and manual publishing

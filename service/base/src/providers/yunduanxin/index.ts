@@ -16,6 +16,7 @@ import {
   matchesCountryFilter,
   normalizeText,
   resolveAbsoluteUrl,
+  withProviderRequestTimeout,
 } from "../../shared/index.js";
 import type { SmsProvider } from "../contracts.js";
 import { detectYunDuanXinAccessGateHtml, fetchYunDuanXinHtml } from "./session-helper.js";
@@ -43,7 +44,11 @@ export class YunDuanXinProvider implements SmsProvider {
     ],
   };
 
-  constructor(private readonly config: EasySmsRuntimeConfig) {}
+  private readonly config: EasySmsRuntimeConfig;
+
+  constructor(config: EasySmsRuntimeConfig) {
+    this.config = withProviderRequestTimeout(config, this.descriptor.key);
+  }
 
   async listPublicNumbers(options: ListPublicNumbersOptions): Promise<SmsPublicNumber[]> {
     const $ = await this.fetchDocument(this.descriptor.homepageUrl);

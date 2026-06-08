@@ -6,7 +6,62 @@ import { promisify } from "node:util";
 import { load, type CheerioAPI } from "cheerio";
 
 import { ValidationError } from "../domain/errors.js";
-import type { EasySmsRuntimeConfig, SmsNumberReference, SmsPublicNumber } from "../domain/models.js";
+import type {
+  EasySmsRuntimeConfig,
+  SmsNumberReference,
+  SmsProviderKey,
+  SmsPublicNumber,
+} from "../domain/models.js";
+
+const MIN_PROVIDER_REQUEST_TIMEOUT_MS = 5000;
+
+export const defaultProviderRequestTimeoutMs: Partial<Record<SmsProviderKey, number>> = {
+  onlinesim: 15000,
+  smstome: 75000,
+  receive_smss: 30000,
+  receive_sms_free_cc: 30000,
+  sms24: 20000,
+  yunduanxin: 20000,
+  hero_sms: 15000,
+};
+
+function normalizeRequestTimeoutMs(value: unknown): number | undefined {
+  const numericValue = typeof value === "number"
+    ? value
+    : typeof value === "string" && value.trim()
+      ? Number(value.trim())
+      : undefined;
+  if (numericValue === undefined || !Number.isFinite(numericValue) || numericValue <= 0) {
+    return undefined;
+  }
+  return Math.max(MIN_PROVIDER_REQUEST_TIMEOUT_MS, Math.ceil(numericValue));
+}
+
+export function resolveProviderRequestTimeoutMs(
+  config: EasySmsRuntimeConfig,
+  providerKey: string,
+): number {
+  const normalizedProviderKey = providerKey.trim() as SmsProviderKey;
+  return normalizeRequestTimeoutMs(config.scraping.providerRequestTimeoutMs?.[normalizedProviderKey])
+    ?? normalizeRequestTimeoutMs(defaultProviderRequestTimeoutMs[normalizedProviderKey])
+    ?? normalizeRequestTimeoutMs(config.scraping.requestTimeoutMs)
+    ?? defaultProviderRequestTimeoutMs.onlinesim
+    ?? 15000;
+}
+
+export function withProviderRequestTimeout(
+  config: EasySmsRuntimeConfig,
+  providerKey: string,
+): EasySmsRuntimeConfig {
+  const requestTimeoutMs = resolveProviderRequestTimeoutMs(config, providerKey);
+  return {
+    ...config,
+    scraping: {
+      ...config.scraping,
+      requestTimeoutMs,
+    },
+  };
+}
 
 const countryDialCodeByName: Record<string, string> = {
   usa: "+1",

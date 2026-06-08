@@ -26,6 +26,15 @@ export const defaultEasySmsRuntimeConfig: EasySmsRuntimeConfig = {
   },
   scraping: {
     requestTimeoutMs: 15000,
+    providerRequestTimeoutMs: {
+      onlinesim: 15000,
+      smstome: 75000,
+      receive_smss: 30000,
+      receive_sms_free_cc: 30000,
+      sms24: 20000,
+      yunduanxin: 20000,
+      hero_sms: 15000,
+    },
     maxNumbersPerProvider: 20,
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
