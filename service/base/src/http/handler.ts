@@ -123,7 +123,12 @@ export class EasySmsHttpHandler {
     };
   }
 
-  public async queryProviderSelectionPlan(options: Pick<ListPublicNumbersOptions, "countryCode" | "countryName" | "providerKey" | "costTier" | "limit"> = {}) {
+  public async queryProviderSelectionPlan(
+    options: Pick<
+      ListPublicNumbersOptions,
+      "countryCode" | "countryName" | "providerKey" | "costTier" | "limit" | "phoneBlacklist" | "providerPhoneBlacklist" | "allowReuse"
+    > = {},
+  ) {
     return {
       strategyModeId: this.service.config.strategy.providerStrategyModeId,
       routeKind: "list-public-numbers",

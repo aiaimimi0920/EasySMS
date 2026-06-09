@@ -584,6 +584,23 @@ export function buildOpenApiDocument(): Record<string, unknown> {
               in: "query",
               schema: { type: "integer", minimum: 0 },
             },
+            {
+              name: "phoneBlacklist",
+              in: "query",
+              schema: { type: "string" },
+              description: "Comma-separated phone numbers to exclude globally for this request.",
+            },
+            {
+              name: "providerPhoneBlacklist",
+              in: "query",
+              schema: { type: "string" },
+              description: "Comma-separated provider|phone pairs to exclude only for matching providers.",
+            },
+            {
+              name: "allowReuse",
+              in: "query",
+              schema: { type: "boolean" },
+            },
           ],
           responses: {
             "200": {
@@ -1105,6 +1122,23 @@ export function buildOpenApiDocument(): Record<string, unknown> {
               in: "query",
               schema: { type: "string", enum: ["free", "paid"] },
             },
+            {
+              name: "phoneBlacklist",
+              in: "query",
+              schema: { type: "string" },
+              description: "Comma-separated phone numbers to exclude globally for this request.",
+            },
+            {
+              name: "providerPhoneBlacklist",
+              in: "query",
+              schema: { type: "string" },
+              description: "Comma-separated provider|phone pairs to exclude only for matching providers.",
+            },
+            {
+              name: "allowReuse",
+              in: "query",
+              schema: { type: "boolean" },
+            },
           ],
           responses: {
             "200": {
@@ -1160,6 +1194,23 @@ export function buildOpenApiDocument(): Record<string, unknown> {
               name: "costTier",
               in: "query",
               schema: { type: "string", enum: ["free", "paid"] },
+            },
+            {
+              name: "phoneBlacklist",
+              in: "query",
+              schema: { type: "string" },
+              description: "Comma-separated phone numbers to exclude globally for this request.",
+            },
+            {
+              name: "providerPhoneBlacklist",
+              in: "query",
+              schema: { type: "string" },
+              description: "Comma-separated provider|phone pairs to exclude only for matching providers.",
+            },
+            {
+              name: "allowReuse",
+              in: "query",
+              schema: { type: "boolean" },
             },
           ],
           responses: {
@@ -2087,6 +2138,11 @@ export function buildOpenApiDocument(): Record<string, unknown> {
             phoneBlacklist: {
               type: "array",
               items: { type: "string" },
+            },
+            providerPhoneBlacklist: {
+              type: "array",
+              items: { type: "string" },
+              description: "Provider-scoped phone exclusions encoded as providerKey|phoneNumber.",
             },
             selectionMode: { type: "string", enum: ["price-first", "success-first", "stock-first", "balanced"] },
             allowReuse: { type: "boolean" },

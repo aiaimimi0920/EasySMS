@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type {
   EasySmsRuntimeConfig,
+  HeroSmsActivationCreateInput,
   ListPublicNumbersOptions,
   ProviderDescriptor,
   SmsProviderKey,
@@ -488,6 +489,34 @@ describe("EasySms synthetic activation facade", () => {
     expect(session.numberId).toBe(usableNumber.numberId);
   });
 
+  it("does not open provider-phone-blacklisted public numbers but allows the same phone from another provider", async () => {
+    const onlinesimProvider = new ConfigurableSyntheticProvider(
+      "onlinesim",
+      "OnlineSIM Free Numbers",
+      "+12025550123",
+      1,
+    );
+    const sms24Provider = new ConfigurableSyntheticProvider(
+      "sms24",
+      "SMS24.me",
+      "+12025550123",
+      2,
+    );
+    const service = new EasySmsService(
+      createConfigWithProviders(["onlinesim", "sms24"]),
+      [onlinesimProvider, sms24Provider],
+    );
+
+    const session = await service.openSession({
+      service: "otp",
+      providerPhoneBlacklist: ["onlinesim|+12025550123"],
+    } as HeroSmsActivationCreateInput & { providerPhoneBlacklist: string[] });
+
+    expect(session.providerKey).toBe("sms24");
+    expect(session.phoneNumber).toBe("+12025550123");
+    expect(session.numberId).toBe(sms24Provider.number.numberId);
+  });
+
   it("does not mark a provider empty when caller phoneBlacklist rejects every listed public number", async () => {
     const rejectedNumber = createPublicNumber("+12025550123", 1);
     const provider = new MultiNumberSyntheticProvider([rejectedNumber]);
@@ -524,6 +553,38 @@ describe("EasySms synthetic activation facade", () => {
     expect(service.listProviderHealth()[0]?.healthState).toBe("healthy");
   });
 
+  it("marks only provider-scoped selection candidates unavailable when caller providerPhoneBlacklist rejects their numbers", async () => {
+    const onlinesimProvider = new ConfigurableSyntheticProvider(
+      "onlinesim",
+      "OnlineSIM Free Numbers",
+      "+12025550123",
+      1,
+    );
+    const sms24Provider = new ConfigurableSyntheticProvider(
+      "sms24",
+      "SMS24.me",
+      "+12025550123",
+      2,
+    );
+    const service = new EasySmsService(
+      createConfigWithProviders(["onlinesim", "sms24"]),
+      [onlinesimProvider, sms24Provider],
+    );
+
+    const candidates = await service.queryListSelectionPlan({
+      costTier: "free",
+      countryCode: "+1",
+      providerPhoneBlacklist: ["onlinesim|+12025550123"],
+    } as ListPublicNumbersOptions & { providerPhoneBlacklist: string[] });
+
+    const onlinesimCandidate = candidates.find((candidate) => candidate.providerKey === "onlinesim");
+    const sms24Candidate = candidates.find((candidate) => candidate.providerKey === "sms24");
+    expect(onlinesimCandidate?.available).toBe(false);
+    expect(onlinesimCandidate?.availabilityIssue).toContain("No request-eligible public numbers");
+    expect(sms24Candidate?.available).toBe(true);
+    expect(service.listProviderHealth().find((item) => item.providerKey === "onlinesim")?.healthState).toBe("healthy");
+  });
+
   it("refreshes country-scoped selection candidates before reporting them available", async () => {
     const usNumber = createPublicNumber("+12025550123", 1);
     const provider = new CountryFilteredSyntheticProvider([usNumber]);
@@ -551,6 +612,45 @@ describe("EasySms synthetic activation facade", () => {
       numberId: rejectedNumber.numberId,
       phoneBlacklist: [rejectedNumber.phoneNumber],
     })).rejects.toThrow("requested numberId is listed in phoneBlacklist");
+  });
+
+  it("rejects an explicit public number only when providerPhoneBlacklist matches its provider and phone", async () => {
+    const onlinesimProvider = new ConfigurableSyntheticProvider(
+      "onlinesim",
+      "OnlineSIM Free Numbers",
+      "+12025550123",
+      1,
+    );
+    const sms24Provider = new ConfigurableSyntheticProvider(
+      "sms24",
+      "SMS24.me",
+      "+12025550123",
+      2,
+    );
+    const service = new EasySmsService(
+      createConfigWithProviders(["onlinesim", "sms24"]),
+      [onlinesimProvider, sms24Provider],
+    );
+
+    await service.listPublicNumbers({ providerKey: "onlinesim", limit: 1 });
+    await service.listPublicNumbers({ providerKey: "sms24", limit: 1 });
+
+    await expect(service.openSession({
+      service: "otp",
+      numberId: onlinesimProvider.number.numberId,
+      providerPhoneBlacklist: ["onlinesim|+12025550123"],
+    } as HeroSmsActivationCreateInput & { providerPhoneBlacklist: string[] })).rejects.toThrow(
+      "requested numberId is listed in providerPhoneBlacklist",
+    );
+
+    const session = await service.openSession({
+      service: "otp",
+      numberId: sms24Provider.number.numberId,
+      providerPhoneBlacklist: ["onlinesim|+12025550123"],
+    } as HeroSmsActivationCreateInput & { providerPhoneBlacklist: string[] });
+
+    expect(session.providerKey).toBe("sms24");
+    expect(session.phoneNumber).toBe("+12025550123");
   });
 
   it("does not reacquire public numbers whose local synthetic lease is already at capacity", async () => {

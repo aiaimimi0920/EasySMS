@@ -62,6 +62,7 @@ export interface HeroSmsActivationCreateInput {
   ref?: string;
   phoneException?: string;
   phoneBlacklist?: string[];
+  providerPhoneBlacklist?: string[];
   selectionMode?: HeroSmsSelectionMode;
   allowReuse?: boolean;
   businessKey?: string;
@@ -625,6 +626,7 @@ export interface ListPublicNumbersOptions {
   countryName?: string;
   costTier?: CostTier;
   phoneBlacklist?: string[];
+  providerPhoneBlacklist?: string[];
   allowReuse?: boolean;
 }
 

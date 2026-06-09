@@ -69,6 +69,14 @@ export function parseListPublicNumbersOptions(url: URL): ListPublicNumbersOption
     .flatMap((value) => value.split(","))
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
+  const rawProviderPhoneBlacklist = [
+    ...url.searchParams.getAll("providerPhoneBlacklist"),
+    ...url.searchParams.getAll("providerPhoneBlacklist[]"),
+  ];
+  const providerPhoneBlacklist = rawProviderPhoneBlacklist
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
 
   if (limitParam && (!Number.isFinite(limit) || limit <= 0)) {
     throw new ValidationError("limit must be a positive integer.");
@@ -81,6 +89,7 @@ export function parseListPublicNumbersOptions(url: URL): ListPublicNumbersOption
     countryName: url.searchParams.get("countryName") ?? undefined,
     costTier: parseCostTier(url.searchParams.get("costTier")),
     phoneBlacklist: phoneBlacklist.length > 0 ? phoneBlacklist : undefined,
+    providerPhoneBlacklist: providerPhoneBlacklist.length > 0 ? providerPhoneBlacklist : undefined,
     allowReuse: parseBooleanQuery(url.searchParams.get("allowReuse")),
   };
 }
@@ -318,6 +327,14 @@ export function parseHeroSmsActivationCreateInput(body: unknown): HeroSmsActivat
       .map((item) => typeof item === "string" ? item.trim() : "")
       .filter((item) => item.length > 0);
   }
+  if (payload.providerPhoneBlacklist !== undefined) {
+    if (!Array.isArray(payload.providerPhoneBlacklist)) {
+      throw new ValidationError("providerPhoneBlacklist must be an array of strings when provided.");
+    }
+    input.providerPhoneBlacklist = payload.providerPhoneBlacklist
+      .map((item) => typeof item === "string" ? item.trim() : "")
+      .filter((item) => item.length > 0);
+  }
   if (typeof payload.selectionMode === "string" && payload.selectionMode.trim()) {
     const selectionMode = payload.selectionMode.trim();
     if (!["price-first", "success-first", "stock-first", "balanced"].includes(selectionMode)) {
@@ -359,6 +376,7 @@ export function parseActivationCreateInputFromUrl(url: URL): HeroSmsActivationCr
     "ref",
     "phoneException",
     "phoneBlacklist",
+    "providerPhoneBlacklist",
     "selectionMode",
     "allowReuse",
     "businessKey",
@@ -378,6 +396,12 @@ export function parseActivationCreateInputFromUrl(url: URL): HeroSmsActivationCr
   }
   if (payload.phoneBlacklist !== undefined) {
     payload.phoneBlacklist = String(payload.phoneBlacklist)
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+  }
+  if (payload.providerPhoneBlacklist !== undefined) {
+    payload.providerPhoneBlacklist = String(payload.providerPhoneBlacklist)
       .split(",")
       .map((item) => item.trim())
       .filter((item) => item.length > 0);

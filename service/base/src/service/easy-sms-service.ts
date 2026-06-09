@@ -259,6 +259,49 @@ function buildPhoneBlacklistLookupKeys(phoneBlacklist: string[] | undefined): Se
   return keys;
 }
 
+function buildProviderPhoneBlacklistLookup(
+  providerPhoneBlacklist: string[] | undefined,
+): Map<string, Set<string>> {
+  const lookup = new Map<string, Set<string>>();
+  for (const item of providerPhoneBlacklist ?? []) {
+    const raw = normalizeText(item);
+    if (!raw.includes("|")) {
+      continue;
+    }
+    const [rawProviderKey, rawPhoneNumber] = raw.split("|", 2);
+    const providerKey = normalizeText(rawProviderKey).toLowerCase();
+    const phoneKeys = buildPhoneNumberLookupKeys(rawPhoneNumber);
+    if (!providerKey || phoneKeys.size === 0) {
+      continue;
+    }
+    const providerLookup = lookup.get(providerKey) ?? new Set<string>();
+    for (const phoneKey of phoneKeys) {
+      providerLookup.add(phoneKey);
+    }
+    lookup.set(providerKey, providerLookup);
+  }
+  return lookup;
+}
+
+function isProviderPhoneRejectedByLookup(
+  providerKey: string | undefined,
+  phoneNumber: string | undefined,
+  providerPhoneBlacklistLookup: Map<string, Set<string>>,
+): boolean {
+  const normalizedProviderKey = normalizeText(providerKey).toLowerCase();
+  if (!normalizedProviderKey) {
+    return false;
+  }
+  const phoneBlacklistLookupKeys = providerPhoneBlacklistLookup.get(normalizedProviderKey);
+  if (!phoneBlacklistLookupKeys || phoneBlacklistLookupKeys.size === 0) {
+    return false;
+  }
+  return hasAnyPhoneNumberLookupKey(
+    buildPhoneNumberLookupKeys(phoneNumber),
+    phoneBlacklistLookupKeys,
+  );
+}
+
 function isPhoneScopedTerminalOutcome(report: SmsSessionOutcomeReport | undefined): boolean {
   if (!report || report.success) {
     return false;
@@ -1198,6 +1241,7 @@ export class EasySmsService {
       .filter((lease) => !wantedCountryName || normalizeText(lease.countryName).toLowerCase().includes(wantedCountryName))
       .filter((lease) => !wantedOperator || lease.operator === wantedOperator)
       .filter((lease) => !this.isPhoneRejectedByCallerBlacklist(lease.phoneNumber, input))
+      .filter((lease) => !this.isProviderPhoneRejectedByCallerBlacklist(lease.providerKey, lease.phoneNumber, input))
       .filter((lease) => !this.isPublicNumberReservedByPendingSyntheticActivation({
         providerKey: lease.providerKey as SmsProviderKey,
         providerDisplayName: this.providers.get(lease.providerKey)?.descriptor.displayName ?? lease.providerKey,
@@ -2240,13 +2284,21 @@ export class EasySmsService {
   private isPublicNumberRejectedByCallerBlacklist(
     number: SmsPublicNumber,
     phoneBlacklistLookupKeys: Set<string>,
+    providerPhoneBlacklistLookup: Map<string, Set<string>>,
   ): boolean {
-    if (phoneBlacklistLookupKeys.size === 0) {
-      return false;
-    }
-    return hasAnyPhoneNumberLookupKey(
-      buildPhoneNumberLookupKeys(number.phoneNumber),
-      phoneBlacklistLookupKeys,
+    return (
+      (
+        phoneBlacklistLookupKeys.size > 0
+        && hasAnyPhoneNumberLookupKey(
+          buildPhoneNumberLookupKeys(number.phoneNumber),
+          phoneBlacklistLookupKeys,
+        )
+      )
+      || isProviderPhoneRejectedByLookup(
+        number.providerKey,
+        number.phoneNumber,
+        providerPhoneBlacklistLookup,
+      )
     );
   }
 
@@ -2261,6 +2313,18 @@ export class EasySmsService {
     return hasAnyPhoneNumberLookupKey(
       buildPhoneNumberLookupKeys(phoneNumber),
       phoneBlacklistLookupKeys,
+    );
+  }
+
+  private isProviderPhoneRejectedByCallerBlacklist(
+    providerKey: string | undefined,
+    phoneNumber: string | undefined,
+    input: HeroSmsActivationCreateInput,
+  ): boolean {
+    return isProviderPhoneRejectedByLookup(
+      providerKey,
+      phoneNumber,
+      buildProviderPhoneBlacklistLookup(input.providerPhoneBlacklist),
     );
   }
 
@@ -2349,13 +2413,22 @@ export class EasySmsService {
 
   private filterUsablePublicNumbers(
     numbers: SmsPublicNumber[],
-    options: { allowActiveLeaseReuse?: boolean; phoneBlacklistLookupKeys?: Set<string> } = {},
+    options: {
+      allowActiveLeaseReuse?: boolean;
+      phoneBlacklistLookupKeys?: Set<string>;
+      providerPhoneBlacklistLookup?: Map<string, Set<string>>;
+    } = {},
   ): SmsPublicNumber[] {
     const allowActiveLeaseReuse = options.allowActiveLeaseReuse !== false;
     const phoneBlacklistLookupKeys = options.phoneBlacklistLookupKeys ?? new Set<string>();
+    const providerPhoneBlacklistLookup = options.providerPhoneBlacklistLookup ?? new Map<string, Set<string>>();
     return numbers.filter((number) => (
       !this.isPublicNumberRejectedByOutcome(number)
-      && !this.isPublicNumberRejectedByCallerBlacklist(number, phoneBlacklistLookupKeys)
+      && !this.isPublicNumberRejectedByCallerBlacklist(
+        number,
+        phoneBlacklistLookupKeys,
+        providerPhoneBlacklistLookup,
+      )
       && !this.isPublicNumberReservedByPendingSyntheticActivation(number)
       && (
         allowActiveLeaseReuse
@@ -2804,6 +2877,7 @@ export class EasySmsService {
     const items = [];
     const errors = [];
     const phoneBlacklistLookupKeys = buildPhoneBlacklistLookupKeys(options.phoneBlacklist);
+    const providerPhoneBlacklistLookup = buildProviderPhoneBlacklistLookup(options.providerPhoneBlacklist);
 
     for (let index = 0; index < orderedProviders.length; index += batchSize) {
       const batch = orderedProviders.slice(index, index + batchSize);
@@ -2829,6 +2903,7 @@ export class EasySmsService {
             const usableProviderItems = this.filterUsablePublicNumbers(providerItems, {
               allowActiveLeaseReuse: options.allowReuse !== false,
               phoneBlacklistLookupKeys,
+              providerPhoneBlacklistLookup,
             });
             this.operationalState.recordRouteSuccess(context, {
               detail: usableProviderItems.length > 0
@@ -3121,8 +3196,12 @@ export class EasySmsService {
     ));
   }
 
-  private hasRequestScopedListFilters(options: Pick<ListPublicNumbersOptions, "phoneBlacklist" | "allowReuse">): boolean {
-    return Boolean(options.phoneBlacklist?.length) || options.allowReuse === false;
+  private hasRequestScopedListFilters(
+    options: Pick<ListPublicNumbersOptions, "phoneBlacklist" | "providerPhoneBlacklist" | "allowReuse">,
+  ): boolean {
+    return Boolean(options.phoneBlacklist?.length)
+      || Boolean(options.providerPhoneBlacklist?.length)
+      || options.allowReuse === false;
   }
 
   private shouldRefreshListSelectionCandidate(
@@ -3165,6 +3244,7 @@ export class EasySmsService {
     }
 
     const phoneBlacklistLookupKeys = buildPhoneBlacklistLookupKeys(options.phoneBlacklist);
+    const providerPhoneBlacklistLookup = buildProviderPhoneBlacklistLookup(options.providerPhoneBlacklist);
     await Promise.allSettled(refreshCandidates.map(async (candidate) => {
       const provider = this.providers.get(candidate.providerKey);
       if (!provider || !this.matchesListCostTier(provider.descriptor, options.costTier)) {
@@ -3191,6 +3271,7 @@ export class EasySmsService {
         const usableItems = this.filterUsablePublicNumbers(providerItems, {
           allowActiveLeaseReuse: options.allowReuse !== false,
           phoneBlacklistLookupKeys,
+          providerPhoneBlacklistLookup,
         });
         availabilityByProvider.set(provider.descriptor.key, {
           itemCount: providerItems.length,
@@ -3216,7 +3297,7 @@ export class EasySmsService {
   private applyRequestScopedListAvailability(
     candidates: SmsProviderSelectionCandidate[],
     availabilityByProvider: Map<string, RequestScopedListAvailability>,
-    options: Pick<ListPublicNumbersOptions, "phoneBlacklist" | "allowReuse">,
+    options: Pick<ListPublicNumbersOptions, "phoneBlacklist" | "providerPhoneBlacklist" | "allowReuse">,
   ): SmsProviderSelectionCandidate[] {
     if (!this.hasRequestScopedListFilters(options)) {
       return candidates;
@@ -3762,6 +3843,12 @@ export class EasySmsService {
           "The requested numberId is listed in phoneBlacklist.",
         );
       }
+      if (this.isProviderPhoneRejectedByCallerBlacklist(reference.providerKey, reference.phoneNumber, input)) {
+        throw new ProviderRouteUnavailableError(
+          provider.descriptor.key,
+          "The requested numberId is listed in providerPhoneBlacklist.",
+        );
+      }
       const inboxAvailabilityIssue = this.operationalState.getAvailabilityIssue(
         this.buildInboxRouteContext(provider, reference),
       );
@@ -3785,6 +3872,7 @@ export class EasySmsService {
     }
 
     const phoneBlacklistLookupKeys = buildPhoneBlacklistLookupKeys(input.phoneBlacklist);
+    const providerPhoneBlacklistLookup = buildProviderPhoneBlacklistLookup(input.providerPhoneBlacklist);
 
     const orderedProviders = this.resolveProvidersForList({
       providerKey,
@@ -3823,6 +3911,7 @@ export class EasySmsService {
         const usableItems = this.filterUsablePublicNumbers(items, {
           allowActiveLeaseReuse: input.allowReuse !== false,
           phoneBlacklistLookupKeys,
+          providerPhoneBlacklistLookup,
         }).filter((number) => this.isPublicNumberInboxRouteAvailable(provider, number));
         this.operationalState.recordRouteSuccess(context, {
           detail: usableItems.length > 0
