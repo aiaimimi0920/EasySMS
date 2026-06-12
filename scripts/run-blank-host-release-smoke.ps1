@@ -192,7 +192,7 @@ $effectiveImage = if (-not [string]::IsNullOrWhiteSpace($Image)) {
 }
 
 $workRoot = if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
-    Join-Path $repoRoot ".tmp\blank-host-release-smoke\$effectiveRunId"
+    Join-Path ([System.IO.Path]::GetTempPath()) "easy-sms-blank-host-release-smoke\$effectiveRunId"
 } else {
     Resolve-EasySmsPath -Path $WorkRoot
 }
