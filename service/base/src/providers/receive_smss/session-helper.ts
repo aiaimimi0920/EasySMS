@@ -12,6 +12,20 @@ const receiveSmssPythonHelperPath = resolve(
 const receiveSmssAccessGatePattern =
   /attention required! \| cloudflare|just a moment|enable javascript and cookies to continue|正在进行安全验证/i;
 
+const receiveSmssImpersonationProfiles = [
+  "chrome123",
+  "chrome124",
+  "chrome146",
+  "chrome120",
+] as const;
+
+const receiveSmssHeaderModes = [
+  "full-no-ua",
+  "no-headers",
+  "accept-only",
+  "legacy",
+] as const;
+
 export interface ReceiveSmssAuthConfig {
   username?: string;
   password?: string;
@@ -40,6 +54,14 @@ export function buildReceiveSmssLoginPayload(
 
 export function detectReceiveSmssAccessGateHtml(html: string): boolean {
   return receiveSmssAccessGatePattern.test(String(html ?? ""));
+}
+
+export function getReceiveSmssImpersonationProfiles(): string[] {
+  return [...receiveSmssImpersonationProfiles];
+}
+
+export function getReceiveSmssHeaderModes(): string[] {
+  return [...receiveSmssHeaderModes];
 }
 
 export function resolveReceiveSmssAuthConfig(
@@ -87,12 +109,20 @@ export async function fetchReceiveSmssHtml(
         { command: "python", prefix: [] as string[] },
       ];
 
-  const buildArgs = (payload: ReceiveSmssLoginPayload | undefined): string[] => [
+  const buildArgs = (
+    payload: ReceiveSmssLoginPayload | undefined,
+    profile: string,
+    headerMode: string,
+  ): string[] => [
     receiveSmssPythonHelperPath,
     "--url",
     url,
     "--timeout-seconds",
     String(Math.max(5, Math.ceil(config.scraping.requestTimeoutMs / 1000))),
+    "--impersonate-profile",
+    profile,
+    "--header-mode",
+    headerMode,
     ...(payload
       ? [
           "--login-username",
@@ -131,20 +161,37 @@ export async function fetchReceiveSmssHtml(
     return stdout;
   };
 
-  const args = buildArgs(loginPayload);
-  const anonymousArgs = loginPayload ? buildArgs(undefined) : undefined;
   let lastError: Error | undefined;
   for (const candidate of commandCandidates) {
-    try {
-      return await runHelper(candidate.command, candidate.prefix, args);
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      if (isCommandMissingError(lastError)) {
-        continue;
+    let commandMissing = false;
+    for (const profile of getReceiveSmssImpersonationProfiles()) {
+      for (const headerMode of getReceiveSmssHeaderModes()) {
+        try {
+          return await runHelper(candidate.command, candidate.prefix, buildArgs(loginPayload, profile, headerMode));
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          if (isCommandMissingError(lastError)) {
+            commandMissing = true;
+            break;
+          }
+          if (loginPayload && shouldRetryReceiveSmssAnonymously(lastError)) {
+            try {
+              return await runHelper(candidate.command, candidate.prefix, buildArgs(undefined, profile, headerMode));
+            } catch (anonymousError) {
+              lastError = anonymousError instanceof Error ? anonymousError : new Error(String(anonymousError));
+              if (isCommandMissingError(lastError)) {
+                commandMissing = true;
+                break;
+              }
+            }
+          }
+        }
       }
-      if (anonymousArgs && shouldRetryReceiveSmssAnonymously(lastError)) {
-        return await runHelper(candidate.command, candidate.prefix, anonymousArgs);
+      if (commandMissing) {
+        break;
       }
+    }
+    if (!commandMissing) {
       throw lastError;
     }
   }

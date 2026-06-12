@@ -303,4 +303,31 @@ describe("EasySmsProviderOperationalState", () => {
     expect(candidate.availabilityIssue).toBeUndefined();
     expect(candidate.providerStatus).toBe("degraded");
   });
+
+  it("redacts secret query values before storing route failure details", () => {
+    const state = new EasySmsProviderOperationalState([descriptor]);
+    const context = {
+      providerKey: descriptor.key,
+      providerDisplayName: descriptor.displayName,
+      routeKind: "list-public-numbers" as const,
+      scopeKind: "provider" as const,
+      scopeValue: "global",
+    };
+
+    const failure = state.recordRouteFailure(
+      context,
+      new Error(
+        "Failed to parse JSON from https://onlinesim.io/api/getFreeList?lang=en&apikey=live-secret&token=raw-token",
+      ),
+      new Date("2026-04-05T15:00:00.000Z"),
+    );
+    const health = state.listProviderHealth(new Date("2026-04-05T15:00:00.000Z"))[0];
+
+    expect(failure.route.lastErrorMessage).toContain("apikey=<redacted>");
+    expect(failure.route.lastErrorMessage).toContain("token=<redacted>");
+    expect(failure.route.lastErrorMessage).not.toContain("live-secret");
+    expect(failure.route.lastErrorMessage).not.toContain("raw-token");
+    expect(health?.lastErrorMessage).toBe(failure.route.lastErrorMessage);
+    expect(health?.lastDetail).toBe(failure.route.lastErrorMessage);
+  });
 });

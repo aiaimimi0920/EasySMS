@@ -14,7 +14,7 @@ import type {
   SmsProviderRouteKind,
   SmsProviderRouteScopeKind,
 } from "../domain/models.js";
-import { normalizeText } from "../shared/index.js";
+import { normalizeText, redactSensitiveText } from "../shared/index.js";
 
 export interface SmsProviderRouteContext {
   providerKey: string;
@@ -796,6 +796,9 @@ export class EasySmsProviderOperationalState {
       ? decision.cooldownEscalatedMs
       : decision.cooldownBaseMs;
     const cooldownUntil = cooldownMs > 0 ? new Date(now.getTime() + cooldownMs).toISOString() : undefined;
+    const lastErrorMessage = redactSensitiveText(
+      normalizeText(error instanceof Error ? error.message : String(error)),
+    );
     const nextRoute: SmsProviderRouteHealthSnapshot = {
       routeKey,
       providerKey: context.providerKey,
@@ -808,7 +811,7 @@ export class EasySmsProviderOperationalState {
       lastHealthState: decision.healthState,
       lastErrorClass: decision.errorClass,
       lastErrorCode: decision.errorCode,
-      lastErrorMessage: normalizeText(error instanceof Error ? error.message : String(error)),
+      lastErrorMessage,
       lastReportedAt: now.toISOString(),
     };
     this.routeStates.set(routeKey, nextRoute);

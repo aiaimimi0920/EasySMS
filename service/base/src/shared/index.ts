@@ -200,6 +200,15 @@ export function normalizeText(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
 }
 
+export function redactSensitiveText(value: string | null | undefined): string {
+  return String(value ?? "")
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._-]+/gi, "$1<redacted>")
+    .replace(
+      /\b((?:api[_-]?key|apikey|access[_-]?token|token|password|secret|key)=)([^&\s]+)/gi,
+      "$1<redacted>",
+    );
+}
+
 export function resolveAbsoluteUrl(baseUrl: string, href: string): string {
   return new URL(href, baseUrl).toString();
 }

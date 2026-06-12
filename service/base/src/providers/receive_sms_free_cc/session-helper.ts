@@ -13,6 +13,14 @@ const receiveSmsFreeCcPythonHelperPath = resolve(
 const receiveSmsFreeCcAccessGatePattern =
   /virtual numbers are required to .*register.*or .*login.*before accessing the content/i;
 
+const receiveSmsFreeCcImpersonationProfiles = [
+  "chrome136",
+  "chrome123",
+  "chrome107",
+  "chrome99",
+  "safari17_0",
+] as const;
+
 export interface ReceiveSmsFreeCcLoginPayload {
   mail: string;
   password: string;
@@ -35,6 +43,15 @@ export function buildReceiveSmsFreeCcLoginPayload(
 
 export function isReceiveSmsFreeCcAccessGateHtml(html: string): boolean {
   return receiveSmsFreeCcAccessGatePattern.test(String(html ?? ""));
+}
+
+export function getReceiveSmsFreeCcImpersonationProfiles(): string[] {
+  return [...receiveSmsFreeCcImpersonationProfiles];
+}
+
+function isCommandMissingError(error: Error): boolean {
+  const normalized = error.message.toLowerCase();
+  return normalized.includes("not found") || normalized.includes("cannot find");
 }
 
 export function resolveReceiveSmsFreeCcAuthConfig(
@@ -68,12 +85,14 @@ export async function fetchReceiveSmsFreeCcHtml(
         { command: "python", prefix: [] as string[] },
       ];
 
-  const args = [
+  const buildArgs = (profile: string): string[] => [
     receiveSmsFreeCcPythonHelperPath,
     "--url",
     url,
     "--timeout-seconds",
     String(Math.max(5, Math.ceil(config.scraping.requestTimeoutMs / 1000))),
+    "--impersonate-profile",
+    profile,
     ...(loginPayload
       ? [
           "--login-email",
@@ -84,40 +103,49 @@ export async function fetchReceiveSmsFreeCcHtml(
       : []),
   ];
 
+  const runHelper = async (command: string, prefix: string[], profile: string): Promise<string> => {
+    const stdout = await new Promise<string>((resolveOutput, reject) => {
+      execFile(
+        command,
+        [...prefix, ...buildArgs(profile)],
+        {
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: config.scraping.requestTimeoutMs,
+          windowsHide: true,
+        },
+        (error, commandStdout, commandStderr) => {
+          if (error) {
+            const detail = commandStderr?.trim() || commandStdout?.trim() || error.message;
+            reject(new Error(detail));
+            return;
+          }
+          resolveOutput(commandStdout);
+        },
+      );
+    });
+
+    if (!stdout.trim()) {
+      throw new Error(`receive_sms_free_cc helper returned an empty response for ${url}.`);
+    }
+
+    return stdout;
+  };
+
   let lastError: Error | undefined;
   for (const candidate of commandCandidates) {
-    try {
-      const stdout = await new Promise<string>((resolveOutput, reject) => {
-        execFile(
-          candidate.command,
-          [...candidate.prefix, ...args],
-          {
-            maxBuffer: 16 * 1024 * 1024,
-            timeout: config.scraping.requestTimeoutMs,
-            windowsHide: true,
-          },
-          (error, commandStdout, commandStderr) => {
-            if (error) {
-              const detail = commandStderr?.trim() || commandStdout?.trim() || error.message;
-              reject(new Error(detail));
-              return;
-            }
-            resolveOutput(commandStdout);
-          },
-        );
-      });
-
-      if (!stdout.trim()) {
-        throw new Error(`receive_sms_free_cc helper returned an empty response for ${url}.`);
+    let commandMissing = false;
+    for (const profile of getReceiveSmsFreeCcImpersonationProfiles()) {
+      try {
+        return await runHelper(candidate.command, candidate.prefix, profile);
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (isCommandMissingError(lastError)) {
+          commandMissing = true;
+          break;
+        }
       }
-
-      return stdout;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      const normalized = lastError.message.toLowerCase();
-      if (normalized.includes("not found") || normalized.includes("cannot find")) {
-        continue;
-      }
+    }
+    if (!commandMissing) {
       throw lastError;
     }
   }
