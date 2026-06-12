@@ -661,6 +661,97 @@ describe("EasySmsService health integration", () => {
     });
   });
 
+  it("returns current selection candidates when stale empty refresh is slower than the foreground budget", async () => {
+    let releaseSlowRefresh: ((items: SmsPublicNumber[]) => void) | undefined;
+    const slowRefresh = new Promise<SmsPublicNumber[]>((resolve) => {
+      releaseSlowRefresh = resolve;
+    });
+    const firstDescriptor = {
+      ...createDescriptor(),
+      key: "onlinesim",
+      displayName: "Available Provider",
+    } satisfies ProviderDescriptor;
+    const staleDescriptor = {
+      ...createDescriptor(),
+      key: "sms24",
+      displayName: "Slow Empty Provider",
+    } satisfies ProviderDescriptor;
+    const service = new EasySmsService(
+      {
+        ...createConfig(),
+        scraping: {
+          ...createConfig().scraping,
+          requestTimeoutMs: 50,
+        },
+        providers: {
+          ...createConfig().providers,
+          enabledProviders: ["onlinesim", "sms24"],
+        },
+      },
+      [
+        new FakeSmsProvider(
+          firstDescriptor,
+          async () => [{
+            providerKey: "onlinesim",
+            providerDisplayName: "Available Provider",
+            numberId: "available",
+            sourceUrl: "https://example.com/available",
+            phoneNumber: "+10000000001",
+          }],
+          async () => ({
+            providerKey: "onlinesim",
+            providerDisplayName: "Available Provider",
+            numberId: "available",
+            phoneNumber: "+10000000001",
+            sourceUrl: "https://example.com/available",
+            fetchedAtIso: new Date().toISOString(),
+            messages: [],
+          }),
+        ),
+        new FakeSmsProvider(
+          staleDescriptor,
+          async () => slowRefresh,
+          async () => ({
+            providerKey: "sms24",
+            providerDisplayName: "Slow Empty Provider",
+            numberId: "slow",
+            phoneNumber: "+10000000002",
+            sourceUrl: "https://example.com/slow",
+            fetchedAtIso: new Date().toISOString(),
+            messages: [],
+          }),
+        ),
+      ],
+    );
+
+    service.operationalState.recordRouteSuccess({
+      providerKey: "sms24",
+      providerDisplayName: "Slow Empty Provider",
+      routeKind: "list-public-numbers",
+      scopeKind: "provider",
+      scopeValue: "global",
+    }, {
+      detail: "stale empty",
+      isEmpty: true,
+      now: new Date("2026-04-05T16:00:00.000Z"),
+    });
+
+    const planPromise = service.queryListSelectionPlan({ costTier: "free", limit: 2 });
+    const result = await Promise.race([
+      planPromise,
+      new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 150)),
+    ]);
+
+    releaseSlowRefresh?.([]);
+
+    expect(result).not.toBe("timed-out");
+    expect(Array.isArray(result)).toBe(true);
+    expect((result as Awaited<typeof planPromise>)[0]).toMatchObject({
+      providerKey: "onlinesim",
+      available: true,
+    });
+  });
+
   it("uses probe trend penalties to demote unstable providers", () => {
     const firstDescriptor = {
       ...createDescriptor(),

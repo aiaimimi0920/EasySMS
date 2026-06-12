@@ -77,6 +77,7 @@ const DEFAULT_SYNTHETIC_ACTIVATION_SERVICE = "public-web-sms";
 const DEFAULT_SYNTHETIC_COUNTRY_ID = 0;
 const INITIAL_SYNTHETIC_ACTIVATION_ID = 900000000;
 const INITIAL_SESSION_SEQUENCE = 1;
+const MAX_SELECTION_PLAN_FOREGROUND_REFRESH_MS = 5_000;
 const OTP_CODE_PATTERN = /(?:^|[^\d])(\d{4,8})(?!\d)/;
 const FREE_FACADE_COUNTRY_ID_OFFSET = 700000000;
 const HEROSMS_DEFAULT_BUSINESS_KEY = "default";
@@ -863,11 +864,40 @@ export class EasySmsService {
     now: Date = new Date(),
   ): Promise<SmsProviderSelectionCandidate[]> {
     const initial = this.getListSelectionPlan(options, now);
-    const requestAvailability = await this.refreshListSelectionCandidates(initial, options, now);
+    const requestAvailability = await this.waitForListSelectionRefreshBudget(
+      this.refreshListSelectionCandidates(initial, options, now),
+    );
     const refreshed = requestAvailability.size > 0
       ? this.getListSelectionPlan(options, new Date())
       : initial;
     return this.applyRequestScopedListAvailability(refreshed, requestAvailability, options);
+  }
+
+  private getListSelectionRefreshForegroundBudgetMs(): number {
+    const configured = Number(this.config.scraping.requestTimeoutMs);
+    if (!Number.isFinite(configured) || configured <= 0) {
+      return MAX_SELECTION_PLAN_FOREGROUND_REFRESH_MS;
+    }
+    return Math.max(1, Math.min(Math.ceil(configured), MAX_SELECTION_PLAN_FOREGROUND_REFRESH_MS));
+  }
+
+  private async waitForListSelectionRefreshBudget(
+    refresh: Promise<Map<string, RequestScopedListAvailability>>,
+  ): Promise<Map<string, RequestScopedListAvailability>> {
+    const budgetMs = this.getListSelectionRefreshForegroundBudgetMs();
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        refresh,
+        new Promise<Map<string, RequestScopedListAvailability>>((resolve) => {
+          timeoutId = setTimeout(() => resolve(new Map<string, RequestScopedListAvailability>()), budgetMs);
+        }),
+      ]);
+    } finally {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+    }
   }
 
   getAvailableActivationProviders(filters: { costTier?: CostTier } = {}): ProviderDescriptor[] {
