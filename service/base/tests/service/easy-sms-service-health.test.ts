@@ -836,6 +836,92 @@ describe("EasySmsService health integration", () => {
     expect(fastCandidate?.availabilityIssue).toContain("No request-eligible public numbers");
   });
 
+  it("lets request-scoped nonempty refresh override a stale mostly-empty probe trend", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-05T13:01:00.000Z"));
+
+    const descriptor = {
+      ...createDescriptor(),
+      key: "yunduanxin",
+      displayName: "Recovered Provider",
+    } satisfies ProviderDescriptor;
+    const usableNumber = {
+      providerKey: "yunduanxin",
+      providerDisplayName: "Recovered Provider",
+      numberId: "recovered",
+      sourceUrl: "https://example.com/recovered",
+      phoneNumber: "+3197010518996",
+      countryCode: "+31",
+    } satisfies SmsPublicNumber;
+    const service = new EasySmsService(
+      {
+        ...createConfig(),
+        maintenance: {
+          ...createConfig().maintenance,
+          probeHistoryMaxEntries: 20,
+          probeHistoryWindowMs: 24 * 60 * 60 * 1000,
+        },
+        providers: {
+          ...createConfig().providers,
+          enabledProviders: ["yunduanxin"],
+        },
+      },
+      [
+        new FakeSmsProvider(
+          descriptor,
+          async () => [usableNumber],
+          async () => ({
+            providerKey: "yunduanxin",
+            providerDisplayName: "Recovered Provider",
+            numberId: "recovered",
+            phoneNumber: "+3197010518996",
+            sourceUrl: "https://example.com/recovered",
+            fetchedAtIso: new Date().toISOString(),
+            messages: [],
+          }),
+        ),
+      ],
+    );
+
+    for (let index = 0; index < 19; index += 1) {
+      service.operationalState.recordProbeResult({
+        providerKey: "yunduanxin",
+        providerDisplayName: "Recovered Provider",
+        ok: true,
+        status: "active",
+        healthState: "empty",
+        healthScore: 1,
+        routeKind: "list-public-numbers",
+        checkedAt: new Date(Date.UTC(2026, 3, 5, 12, index)).toISOString(),
+        detail: "probe found no public numbers",
+      });
+    }
+    service.operationalState.recordProbeResult({
+      providerKey: "yunduanxin",
+      providerDisplayName: "Recovered Provider",
+      ok: true,
+      status: "active",
+      healthState: "healthy",
+      healthScore: 1,
+      routeKind: "list-public-numbers",
+      checkedAt: "2026-04-05T12:59:00.000Z",
+      detail: "probe found one usable public number",
+    });
+
+    const plan = await service.queryListSelectionPlan({
+      costTier: "free",
+      allowReuse: false,
+      limit: 1,
+    }, new Date("2026-04-05T13:01:00.000Z"));
+
+    expect(plan[0]).toMatchObject({
+      providerKey: "yunduanxin",
+      available: true,
+    });
+    expect(plan[0]?.availabilityIssue).toBeUndefined();
+    expect(plan[0]?.notes).toContain("Request-scoped refresh found 1 usable public number.");
+  });
+
   it("uses probe trend penalties to demote unstable providers", () => {
     const firstDescriptor = {
       ...createDescriptor(),

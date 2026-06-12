@@ -3329,8 +3329,19 @@ export class EasySmsService {
     const requestUnavailableReason = "No request-eligible public numbers were available for current selection filters.";
     return candidates.map((candidate) => {
       const availability = availabilityByProvider.get(candidate.providerKey);
-      if (!availability || availability.usableCount > 0) {
+      if (!availability) {
         return candidate;
+      }
+      if (availability.usableCount > 0) {
+        const requestAvailableReason = `Request-scoped refresh found ${availability.usableCount} usable public number${availability.usableCount === 1 ? "" : "s"}.`;
+        return {
+          ...candidate,
+          available: true,
+          availabilityIssue: undefined,
+          notes: candidate.notes.includes(requestAvailableReason)
+            ? candidate.notes
+            : [...candidate.notes, requestAvailableReason],
+        };
       }
       return {
         ...candidate,
