@@ -23,6 +23,7 @@ export async function loadEasySmsRuntimeState(
   }
 
   try {
+    await mkdir(dirname(config.persistence.filePath), { recursive: true });
     const source = await readFile(config.persistence.filePath, "utf8");
     return JSON.parse(source) as EasySmsRuntimeStateSnapshot;
   } catch (error) {
