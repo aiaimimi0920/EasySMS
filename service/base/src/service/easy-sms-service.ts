@@ -864,9 +864,7 @@ export class EasySmsService {
     now: Date = new Date(),
   ): Promise<SmsProviderSelectionCandidate[]> {
     const initial = this.getListSelectionPlan(options, now);
-    const requestAvailability = await this.waitForListSelectionRefreshBudget(
-      this.refreshListSelectionCandidates(initial, options, now),
-    );
+    const requestAvailability = await this.refreshListSelectionCandidates(initial, options, now);
     const refreshed = requestAvailability.size > 0
       ? this.getListSelectionPlan(options, new Date())
       : initial;
@@ -879,25 +877,6 @@ export class EasySmsService {
       return MAX_SELECTION_PLAN_FOREGROUND_REFRESH_MS;
     }
     return Math.max(1, Math.min(Math.ceil(configured), MAX_SELECTION_PLAN_FOREGROUND_REFRESH_MS));
-  }
-
-  private async waitForListSelectionRefreshBudget(
-    refresh: Promise<Map<string, RequestScopedListAvailability>>,
-  ): Promise<Map<string, RequestScopedListAvailability>> {
-    const budgetMs = this.getListSelectionRefreshForegroundBudgetMs();
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        refresh,
-        new Promise<Map<string, RequestScopedListAvailability>>((resolve) => {
-          timeoutId = setTimeout(() => resolve(new Map<string, RequestScopedListAvailability>()), budgetMs);
-        }),
-      ]);
-    } finally {
-      if (timeoutId !== undefined) {
-        clearTimeout(timeoutId);
-      }
-    }
   }
 
   getAvailableActivationProviders(filters: { costTier?: CostTier } = {}): ProviderDescriptor[] {
@@ -3275,7 +3254,7 @@ export class EasySmsService {
 
     const phoneBlacklistLookupKeys = buildPhoneBlacklistLookupKeys(options.phoneBlacklist);
     const providerPhoneBlacklistLookup = buildProviderPhoneBlacklistLookup(options.providerPhoneBlacklist);
-    await Promise.allSettled(refreshCandidates.map(async (candidate) => {
+    const refreshTasks = refreshCandidates.map(async (candidate) => {
       const provider = this.providers.get(candidate.providerKey);
       if (!provider || !this.matchesListCostTier(provider.descriptor, options.costTier)) {
         return;
@@ -3320,8 +3299,22 @@ export class EasySmsService {
       } catch (error) {
         this.operationalState.recordRouteFailure(context, error, now);
       }
-    }));
-    return availabilityByProvider;
+    });
+    const settled = Promise.allSettled(refreshTasks);
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        settled,
+        new Promise<void>((resolve) => {
+          timeoutId = setTimeout(resolve, this.getListSelectionRefreshForegroundBudgetMs());
+        }),
+      ]);
+    } finally {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+    }
+    return new Map(availabilityByProvider);
   }
 
   private applyRequestScopedListAvailability(

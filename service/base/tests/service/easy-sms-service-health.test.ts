@@ -752,6 +752,90 @@ describe("EasySmsService health integration", () => {
     });
   });
 
+  it("keeps completed request-scoped refresh results when another provider exceeds the foreground budget", async () => {
+    let releaseSlowRefresh: ((items: SmsPublicNumber[]) => void) | undefined;
+    const slowRefresh = new Promise<SmsPublicNumber[]>((resolve) => {
+      releaseSlowRefresh = resolve;
+    });
+    const fastDescriptor = {
+      ...createDescriptor(),
+      key: "onlinesim",
+      displayName: "Fast Provider",
+    } satisfies ProviderDescriptor;
+    const slowDescriptor = {
+      ...createDescriptor(),
+      key: "sms24",
+      displayName: "Slow Provider",
+    } satisfies ProviderDescriptor;
+    const rejectedNumber = {
+      providerKey: "onlinesim",
+      providerDisplayName: "Fast Provider",
+      numberId: "rejected",
+      sourceUrl: "https://example.com/rejected",
+      phoneNumber: "+12025550123",
+    } satisfies SmsPublicNumber;
+    const service = new EasySmsService(
+      {
+        ...createConfig(),
+        scraping: {
+          ...createConfig().scraping,
+          requestTimeoutMs: 50,
+        },
+        providers: {
+          ...createConfig().providers,
+          enabledProviders: ["onlinesim", "sms24"],
+        },
+      },
+      [
+        new FakeSmsProvider(
+          fastDescriptor,
+          async () => [rejectedNumber],
+          async () => ({
+            providerKey: "onlinesim",
+            providerDisplayName: "Fast Provider",
+            numberId: "rejected",
+            phoneNumber: "+12025550123",
+            sourceUrl: "https://example.com/rejected",
+            fetchedAtIso: new Date().toISOString(),
+            messages: [],
+          }),
+        ),
+        new FakeSmsProvider(
+          slowDescriptor,
+          async () => slowRefresh,
+          async () => ({
+            providerKey: "sms24",
+            providerDisplayName: "Slow Provider",
+            numberId: "slow",
+            phoneNumber: "+12025550124",
+            sourceUrl: "https://example.com/slow",
+            fetchedAtIso: new Date().toISOString(),
+            messages: [],
+          }),
+        ),
+      ],
+    );
+
+    const planPromise = service.queryListSelectionPlan({
+      costTier: "free",
+      allowReuse: false,
+      phoneBlacklist: [rejectedNumber.phoneNumber],
+      limit: 2,
+    });
+    const result = await Promise.race([
+      planPromise,
+      new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 150)),
+    ]);
+
+    releaseSlowRefresh?.([]);
+
+    expect(result).not.toBe("timed-out");
+    const fastCandidate = (result as Awaited<typeof planPromise>)
+      .find((candidate) => candidate.providerKey === "onlinesim");
+    expect(fastCandidate?.available).toBe(false);
+    expect(fastCandidate?.availabilityIssue).toContain("No request-eligible public numbers");
+  });
+
   it("uses probe trend penalties to demote unstable providers", () => {
     const firstDescriptor = {
       ...createDescriptor(),
