@@ -16,7 +16,7 @@ maintenance:
   activeProbeIntervalMs: 300000
 
 persistence:
-  enabled: false
+  enabled: true
   driver: file
   intervalMs: 60000
   filePath: state/easy-sms-state.json

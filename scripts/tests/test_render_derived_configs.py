@@ -80,6 +80,29 @@ class RenderDerivedConfigsTests(unittest.TestCase):
             userscript_defaults = json.loads(userscript_output.read_text(encoding="utf-8"))
             self.assertEqual(userscript_defaults["pollSeconds"], "7")
 
+    def test_example_runtime_config_enables_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            runtime_output = temp_root / "runtime-config.yaml"
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--config",
+                    str(REPO_ROOT / "config.example.yaml"),
+                    "--runtime-output",
+                    str(runtime_output),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            runtime_config = yaml.safe_load(runtime_output.read_text(encoding="utf-8"))
+            self.assertTrue(runtime_config["persistence"]["enabled"])
+
 
 if __name__ == "__main__":
     unittest.main()
