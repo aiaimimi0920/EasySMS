@@ -40,6 +40,17 @@ class DockerEntrypointContractTests(unittest.TestCase):
         self.assertIn('HOST_CONFIG_WAIT_SECONDS="${EASY_SMS_HOST_CONFIG_WAIT_SECONDS:-10}"', script)
         self.assertIn('wait_for_host_config', script)
 
+    def test_non_root_runtime_falls_back_when_state_dir_rejects_easy_user(self) -> None:
+        script = ENTRYPOINT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('can_start_as_easy() {', script)
+        self.assertIn('EASY_SMS_STATE_LAYOUT_DIR="$STATE_LAYOUT_DIR" gosu easy node - <<', script)
+        self.assertIn("fs.mkdir(process.env.EASY_SMS_STATE_LAYOUT_DIR, { recursive: true })", script)
+        self.assertIn('if can_start_as_easy; then', script)
+        self.assertIn('gosu easy "$@" &', script)
+        self.assertIn('falling back to root runtime because easy user cannot write $STATE_LAYOUT_DIR', script)
+        self.assertIn('"$@" &', script)
+
 
 if __name__ == "__main__":
     unittest.main()

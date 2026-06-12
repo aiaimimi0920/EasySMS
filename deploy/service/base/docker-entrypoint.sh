@@ -121,6 +121,16 @@ print(int(payload.get("syncIntervalSeconds") or 7200))
 PY
 }
 
+can_start_as_easy() {
+  EASY_SMS_STATE_LAYOUT_DIR="$STATE_LAYOUT_DIR" gosu easy node - <<'NODE'
+const fs = require('fs/promises');
+
+fs.mkdir(process.env.EASY_SMS_STATE_LAYOUT_DIR, { recursive: true })
+  .then(() => process.exit(0))
+  .catch(() => process.exit(1));
+NODE
+}
+
 start_runtime() {
   if [ -f "$RUNTIME_ENV_PATH" ]; then
     set -a
@@ -130,8 +140,17 @@ start_runtime() {
   fi
 
   if [ "$(id -u)" = "0" ] && command -v gosu >/dev/null 2>&1; then
-    chown -R easy:easy "$STATE_DIR" "$(dirname "$CONFIG_PATH")" /app
-    gosu easy "$@" &
+    if chown -R easy:easy "$STATE_DIR" "$(dirname "$CONFIG_PATH")" /app; then
+      if can_start_as_easy; then
+        gosu easy "$@" &
+      else
+        echo "[easy-sms] falling back to root runtime because easy user cannot write $STATE_LAYOUT_DIR" >&2
+        "$@" &
+      fi
+    else
+      echo "[easy-sms] falling back to root runtime because ownership fix failed for $STATE_DIR" >&2
+      "$@" &
+    fi
   else
     "$@" &
   fi

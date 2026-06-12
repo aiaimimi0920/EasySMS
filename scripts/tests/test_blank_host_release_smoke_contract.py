@@ -39,12 +39,16 @@ class BlankHostReleaseSmokeContractTests(unittest.TestCase):
         self.assertIn("$_.conclusion -eq 'success'", script)
         self.assertIn("$_.head_branch -eq $RequestedReleaseTag", script)
 
-    def test_default_workroot_uses_short_system_temp_path(self) -> None:
+    def test_default_workroot_repo_cache_and_instance_names_stay_short(self) -> None:
         script = HELPER_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("[System.IO.Path]::GetTempPath()", script)
-        self.assertIn("easy-sms-blank-host-release-smoke", script)
+        self.assertIn('Join-Path $repoRoot ".tmp\\bh\\$effectiveRunId"', script)
+        self.assertIn("$effectiveRepoCacheRoot = Join-Path $workRoot 'r'", script)
+        self.assertIn("-RepoCacheRoot $effectiveRepoCacheRoot", script)
+        self.assertIn('"bh-$effectiveRunId"', script)
+        self.assertIn('"esms-bh-$effectiveRunId"', script)
         self.assertNotIn('Join-Path $repoRoot ".tmp\\blank-host-release-smoke\\$effectiveRunId"', script)
+        self.assertNotIn('"blankhost-smoke-$effectiveRunId"', script)
 
     def test_decrypt_import_code_helper_exists_and_wraps_easysms_import_code(self) -> None:
         script = DECRYPT_HELPER_PATH.read_text(encoding="utf-8")

@@ -192,19 +192,20 @@ $effectiveImage = if (-not [string]::IsNullOrWhiteSpace($Image)) {
 }
 
 $workRoot = if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
-    Join-Path ([System.IO.Path]::GetTempPath()) "easy-sms-blank-host-release-smoke\$effectiveRunId"
+    Join-Path $repoRoot ".tmp\bh\$effectiveRunId"
 } else {
     Resolve-EasySmsPath -Path $WorkRoot
 }
+$effectiveRepoCacheRoot = Join-Path $workRoot 'r'
 $deployHostSource = if ([string]::IsNullOrWhiteSpace($DeployHostSourcePath)) {
     Join-Path $repoRoot 'deploy-host.ps1'
 } else {
     Resolve-EasySmsPath -Path $DeployHostSourcePath
 }
 
-$effectiveInstanceName = if (-not [string]::IsNullOrWhiteSpace($InstanceName)) { $InstanceName } else { "blankhost-smoke-$effectiveRunId" }
-$effectiveContainerName = if (-not [string]::IsNullOrWhiteSpace($ContainerName)) { $ContainerName } else { "easy-sms-$effectiveInstanceName" }
-$effectiveComposeProjectName = if (-not [string]::IsNullOrWhiteSpace($ComposeProjectName)) { $ComposeProjectName } else { "easy-sms-$effectiveInstanceName" }
+$effectiveInstanceName = if (-not [string]::IsNullOrWhiteSpace($InstanceName)) { $InstanceName } else { "bh-$effectiveRunId" }
+$effectiveContainerName = if (-not [string]::IsNullOrWhiteSpace($ContainerName)) { $ContainerName } else { "esms-bh-$effectiveRunId" }
+$effectiveComposeProjectName = if (-not [string]::IsNullOrWhiteSpace($ComposeProjectName)) { $ComposeProjectName } else { "esms-bh-$effectiveRunId" }
 
 if (Test-Path -LiteralPath $workRoot) {
     Remove-Item -LiteralPath $workRoot -Recurse -Force
@@ -258,6 +259,7 @@ try {
             -Pull `
             -NoBuild `
             -ImportCode $importCode `
+            -RepoCacheRoot $effectiveRepoCacheRoot `
             -HostPort $HostPort `
             -InstanceName $effectiveInstanceName `
             -ContainerName $effectiveContainerName `
@@ -318,8 +320,7 @@ try {
     } | ConvertTo-Json -Depth 6
 }
 finally {
-    $sanitizedRef = ($effectiveReleaseTag -replace '[^A-Za-z0-9._-]', '_')
-    $cachedRepoRoot = Join-Path $deployWorkDir ".repo-cache\$RepoName-tag-$sanitizedRef\repo"
+    $cachedRepoRoot = Join-Path $effectiveRepoCacheRoot 'repo'
     $removeScript = Join-Path $cachedRepoRoot 'scripts\remove-service-base.ps1'
 
     if (-not $KeepInstance) {
