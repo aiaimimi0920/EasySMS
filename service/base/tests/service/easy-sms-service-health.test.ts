@@ -662,6 +662,8 @@ describe("EasySmsService health integration", () => {
   });
 
   it("returns current selection candidates when stale empty refresh is slower than the foreground budget", async () => {
+    vi.useFakeTimers();
+
     let releaseSlowRefresh: ((items: SmsPublicNumber[]) => void) | undefined;
     const slowRefresh = new Promise<SmsPublicNumber[]>((resolve) => {
       releaseSlowRefresh = resolve;
@@ -737,22 +739,21 @@ describe("EasySmsService health integration", () => {
     });
 
     const planPromise = service.queryListSelectionPlan({ costTier: "free", limit: 2 });
-    const result = await Promise.race([
-      planPromise,
-      new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 150)),
-    ]);
+    await vi.advanceTimersByTimeAsync(51);
+    const result = await planPromise;
 
     releaseSlowRefresh?.([]);
 
-    expect(result).not.toBe("timed-out");
     expect(Array.isArray(result)).toBe(true);
-    expect((result as Awaited<typeof planPromise>)[0]).toMatchObject({
+    expect(result[0]).toMatchObject({
       providerKey: "onlinesim",
       available: true,
     });
   });
 
   it("keeps completed request-scoped refresh results when another provider exceeds the foreground budget", async () => {
+    vi.useFakeTimers();
+
     let releaseSlowRefresh: ((items: SmsPublicNumber[]) => void) | undefined;
     const slowRefresh = new Promise<SmsPublicNumber[]>((resolve) => {
       releaseSlowRefresh = resolve;
@@ -822,16 +823,12 @@ describe("EasySmsService health integration", () => {
       phoneBlacklist: [rejectedNumber.phoneNumber],
       limit: 2,
     });
-    const result = await Promise.race([
-      planPromise,
-      new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 150)),
-    ]);
+    await vi.advanceTimersByTimeAsync(51);
+    const result = await planPromise;
 
     releaseSlowRefresh?.([]);
 
-    expect(result).not.toBe("timed-out");
-    const fastCandidate = (result as Awaited<typeof planPromise>)
-      .find((candidate) => candidate.providerKey === "onlinesim");
+    const fastCandidate = result.find((candidate) => candidate.providerKey === "onlinesim");
     expect(fastCandidate?.available).toBe(false);
     expect(fastCandidate?.availabilityIssue).toContain("No request-eligible public numbers");
   });
