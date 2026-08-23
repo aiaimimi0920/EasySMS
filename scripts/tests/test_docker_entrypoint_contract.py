@@ -51,6 +51,13 @@ class DockerEntrypointContractTests(unittest.TestCase):
         self.assertIn('falling back to root runtime because easy user cannot write $STATE_LAYOUT_DIR', script)
         self.assertIn('"$@" &', script)
 
+    def test_container_signals_are_forwarded_to_the_runtime_before_exit(self) -> None:
+        script = ENTRYPOINT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("trap 'shutdown_runtime' TERM INT", script)
+        self.assertIn('kill -TERM "$APP_PID" 2>/dev/null || true', script)
+        self.assertIn('wait "$APP_PID" 2>/dev/null || true', script)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,5 @@
 import {
+  ActivationProviderError,
   ActivationSessionNotFoundError,
   ProviderFetchError,
   ProviderNotFoundError,
@@ -397,7 +398,9 @@ interface HeroSmsActivationRequestPlan {
   countryId: number;
   countryCode?: string;
   countryName?: string;
+  countryCandidates?: HeroSmsCountryPrice[];
   operator?: string;
+  operatorExplicit: boolean;
   maxPrice?: number;
   fixedPrice?: boolean;
   ref?: string;
@@ -407,6 +410,15 @@ interface HeroSmsActivationRequestPlan {
   businessKey: string;
   maxBindingsPerPhone: number;
 }
+
+interface HeroSmsActivationAttemptPlan {
+  country: HeroSmsCountryPrice;
+  operator?: string;
+  createInput: HeroSmsActivationCreateInput;
+}
+
+const MAX_HERO_SMS_COUNTRY_ATTEMPTS = 5;
+const MAX_HERO_SMS_OPERATOR_ATTEMPTS_PER_COUNTRY = 4;
 
 function buildSyntheticCountryId(countryName: string, countryCode?: string): number {
   const input = `${normalizeText(countryName).toLowerCase()}|${normalizeText(countryCode).toLowerCase()}`;
@@ -1011,15 +1023,33 @@ export class EasySmsService {
     }
 
     const provider = this.requireHeroSmsProvider();
-    const upstreamActivation = await provider.createActivation({
-      service: plan.service,
-      country: plan.countryId,
-      operator: plan.operator,
-      maxPrice: plan.maxPrice,
-      fixedPrice: plan.fixedPrice,
-      ref: plan.ref,
-      phoneException: plan.phoneException,
-    });
+    const activationAttempts = await this.buildHeroSmsActivationAttemptPlans(plan);
+    let upstreamActivation: HeroSmsActivationSession | undefined;
+    let successfulAttempt: HeroSmsActivationAttemptPlan | undefined;
+    let lastRetryableError: unknown;
+    for (const attempt of activationAttempts) {
+      try {
+        upstreamActivation = await provider.createActivation(attempt.createInput);
+        successfulAttempt = attempt;
+        break;
+      } catch (error) {
+        if (!this.shouldRetryHeroSmsActivationWithAlternatePlan(error)) {
+          throw error;
+        }
+        lastRetryableError = error;
+      }
+    }
+    if (!upstreamActivation || !successfulAttempt) {
+      if (lastRetryableError instanceof Error) {
+        lastRetryableError.message = `${lastRetryableError.message} [selectionAttempts=${this.formatHeroSmsActivationAttemptSummary(activationAttempts)}]`;
+      }
+      throw lastRetryableError instanceof Error
+        ? lastRetryableError
+        : new ActivationProviderError(
+          "hero_sms",
+          `HeroSMS selection attempts exhausted: ${this.formatHeroSmsActivationAttemptSummary(activationAttempts)}`,
+        );
+    }
 
     const openedAtIso = upstreamActivation.createdAtIso || new Date().toISOString();
     const openedAtMs = Date.parse(openedAtIso) || Date.now();
@@ -1027,10 +1057,10 @@ export class EasySmsService {
       upstreamActivationId: upstreamActivation.activationId,
       phoneNumber: upstreamActivation.phoneNumber,
       service: plan.service,
-      countryId: plan.countryId,
-      countryCode: plan.countryCode ?? upstreamActivation.countryCode,
-      countryName: plan.countryName ?? upstreamActivation.countryName,
-      operator: plan.operator ?? upstreamActivation.operator,
+      countryId: successfulAttempt.country.countryId,
+      countryCode: successfulAttempt.country.dialCode ?? plan.countryCode ?? upstreamActivation.countryCode,
+      countryName: successfulAttempt.country.apiName || plan.countryName || upstreamActivation.countryName,
+      operator: successfulAttempt.operator ?? upstreamActivation.operator,
       activationCost: upstreamActivation.activationCost,
       selectionMode: plan.selectionMode,
       businessKey: plan.businessKey,
@@ -1084,10 +1114,49 @@ export class EasySmsService {
 
     const upstreamActivationId = session.upstreamActivationId ?? activationId;
     const lease = this.heroSmsPaidLeasesByUpstreamActivationId.get(upstreamActivationId);
+    if (action === "request-code") {
+      await this.prepareHeroSmsSessionForCodeRetry(session, upstreamActivationId);
+    }
     const result = await this.requireHeroSmsProvider().setActivationStatus(upstreamActivationId, action);
     const decorated = this.decorateHeroSmsStatusUpdateResultForLogicalAssignment(result, session, lease);
     this.applyHeroSmsLeaseAction(session, lease, action, decorated.updatedAtIso);
     return decorated;
+  }
+
+  private async prepareHeroSmsSessionForCodeRetry(
+    session: EasySmsManagedSessionSnapshot,
+    upstreamActivationId: number,
+  ): Promise<void> {
+    if (session.providerKey !== "hero_sms" || session.sessionMode !== "paid-api") {
+      return;
+    }
+
+    let baselineCode = session.lastCode;
+    let baselineText = session.lastText;
+    let baselineReceivedAtIso = session.lastCodeAtIso;
+
+    if (!baselineCode && !baselineText && !baselineReceivedAtIso) {
+      try {
+        const currentStatus = await this.requireHeroSmsProvider().getActivationStatus(upstreamActivationId);
+        baselineCode = currentStatus.code ?? baselineCode;
+        baselineText = currentStatus.text ?? baselineText;
+        baselineReceivedAtIso = currentStatus.receivedAtIso ?? baselineReceivedAtIso;
+      } catch {
+        // Best-effort only. If HeroSMS status probing fails here we still ask the
+        // upstream activation to reissue a code; later polling will decide whether
+        // a new OTP actually arrived.
+      }
+    }
+
+    if (baselineCode || baselineText || baselineReceivedAtIso) {
+      session.baselineCode = baselineCode;
+      session.baselineText = baselineText;
+      session.baselineReceivedAtIso = baselineReceivedAtIso;
+    }
+
+    session.lastRequestedCodeAtIso = new Date().toISOString();
+    this.projectedMessages.delete(session.id);
+    this.managedSessions.set(session.id, session);
   }
 
   private async resolveHeroSmsActivationRequestPlan(
@@ -1104,14 +1173,21 @@ export class EasySmsService {
         : this.config.providers.heroSms.defaultMaxBindingsPerPhone,
     );
 
-    let countryChoice: HeroSmsCountryPrice | undefined;
+    let countryCandidates: HeroSmsCountryPrice[] = [];
     if (Number.isFinite(input.country)) {
-      countryChoice = await this.resolveExplicitHeroSmsCountry(service, Number(input.country));
+      const explicitCountry = await this.resolveExplicitHeroSmsCountry(service, Number(input.country));
+      countryCandidates = explicitCountry ? [explicitCountry] : [];
     } else if (input.countryCode?.trim() || input.countryName?.trim()) {
-      countryChoice = await this.resolveFilteredHeroSmsCountry(service, input.countryCode, input.countryName);
+      countryCandidates = await this.listFilteredHeroSmsCountries(
+        service,
+        input.countryCode,
+        input.countryName,
+        selectionMode,
+      );
     } else {
-      countryChoice = await this.selectHeroSmsCountryByStrategy(service, selectionMode);
+      countryCandidates = await this.listHeroSmsCountryCandidatesByStrategy(service, selectionMode);
     }
+    const countryChoice = countryCandidates[0];
 
     if (!countryChoice) {
       throw new ProviderRouteUnavailableError("hero_sms", "No HeroSMS country matched the requested selection strategy.");
@@ -1128,7 +1204,9 @@ export class EasySmsService {
       countryId: countryChoice.countryId,
       countryCode: countryChoice.dialCode ?? input.countryCode,
       countryName: countryChoice.apiName || input.countryName,
+      countryCandidates,
       operator,
+      operatorExplicit: Boolean(input.operator?.trim()),
       maxPrice: input.maxPrice,
       fixedPrice: input.fixedPrice,
       ref: input.ref,
@@ -1142,6 +1220,95 @@ export class EasySmsService {
 
   private resolveHeroSmsSelectionMode(value: HeroSmsActivationCreateInput["selectionMode"]): HeroSmsSelectionMode {
     return value ?? this.config.providers.heroSms.selectionMode;
+  }
+
+  private shouldRetryHeroSmsActivationWithoutOperator(
+    error: unknown,
+    plan: HeroSmsActivationRequestPlan,
+  ): boolean {
+    if (plan.operatorExplicit || !plan.operator) {
+      return false;
+    }
+    if (!(error instanceof ActivationProviderError)) {
+      return false;
+    }
+    return error.statusCode === 409
+      && error.message.includes("HeroSMS has no numbers available for the requested criteria.");
+  }
+
+  private shouldRetryHeroSmsActivationWithAlternatePlan(error: unknown): boolean {
+    if (!(error instanceof ActivationProviderError)) {
+      return false;
+    }
+    const normalized = error.message.toLowerCase();
+    if (
+      error.statusCode === 409
+      && normalized.includes("herosms has no numbers available for the requested criteria")
+    ) {
+      return true;
+    }
+    return (
+      normalized.includes("banned:")
+      || normalized.includes("account temporarily suspended")
+      || normalized.includes("specific country/service pair")
+      || normalized.includes("currently unavailable")
+      || normalized.includes("capacity unavailable")
+    );
+  }
+
+  private async buildHeroSmsActivationAttemptPlans(
+    plan: HeroSmsActivationRequestPlan,
+  ): Promise<HeroSmsActivationAttemptPlan[]> {
+    const fallbackCountry: HeroSmsCountryPrice = {
+      providerKey: "hero_sms",
+      service: plan.service,
+      countryId: plan.countryId,
+      price: Number.MAX_SAFE_INTEGER,
+      count: undefined,
+      apiName: plan.countryName || String(plan.countryId),
+      dialCode: plan.countryCode,
+    };
+    const countries = (plan.countryCandidates?.length ? plan.countryCandidates : [fallbackCountry])
+      .slice(0, MAX_HERO_SMS_COUNTRY_ATTEMPTS);
+    const attempts: HeroSmsActivationAttemptPlan[] = [];
+    const seen = new Set<string>();
+    for (const country of countries) {
+      const operators = plan.operatorExplicit
+        ? [plan.operator]
+        : await this.listHeroSmsOperatorAttemptCandidates(plan.service, country, plan.selectionMode);
+      for (const operator of operators.slice(0, MAX_HERO_SMS_OPERATOR_ATTEMPTS_PER_COUNTRY)) {
+        const key = `${country.countryId}::${operator || "*"}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        attempts.push({
+          country,
+          operator: operator || undefined,
+          createInput: {
+            service: plan.service,
+            country: country.countryId,
+            operator: operator || undefined,
+            maxPrice: plan.maxPrice,
+            fixedPrice: plan.fixedPrice,
+            ref: plan.ref,
+            phoneException: plan.phoneException,
+          },
+        });
+      }
+    }
+    return attempts;
+  }
+
+  private formatHeroSmsActivationAttemptSummary(
+    attempts: HeroSmsActivationAttemptPlan[],
+  ): string {
+    return attempts
+      .map((attempt) => {
+        const operatorLabel = attempt.operator || "*";
+        return `${attempt.country.countryId}:${operatorLabel}`;
+      })
+      .join(",");
   }
 
   private findReusableHeroSmsLeaseForInput(
@@ -1187,6 +1354,7 @@ export class EasySmsService {
       countryCode: lease.countryCode,
       countryName: lease.countryName,
       operator: input.operator?.trim() || lease.operator,
+      operatorExplicit: Boolean(input.operator?.trim()),
       maxPrice: input.maxPrice,
       fixedPrice: input.fixedPrice,
       ref: input.ref,
@@ -1353,15 +1521,51 @@ export class EasySmsService {
     countryCode?: string,
     countryName?: string,
   ): Promise<HeroSmsCountryPrice | undefined> {
+    return (await this.listFilteredHeroSmsCountries(
+      service,
+      countryCode,
+      countryName,
+      this.resolveHeroSmsSelectionMode(undefined),
+    ))[0];
+  }
+
+  private async listFilteredHeroSmsCountries(
+    service: string,
+    countryCode: string | undefined,
+    countryName: string | undefined,
+    selectionMode: HeroSmsSelectionMode,
+  ): Promise<HeroSmsCountryPrice[]> {
     const provider = this.requireHeroSmsProvider();
     const countries = await provider.getCountries();
     const priced = await provider.listCountryPrices(service, countries);
-    const wantedCode = normalizeText(countryCode);
+    const wantedCode = normalizeText(countryCode).toLowerCase();
     const wantedName = normalizeText(countryName).toLowerCase();
+    const wantedRegionNames = new Set<string>();
+    if (/^[a-z]{2}$/.test(wantedCode)) {
+      try {
+        const displayName = new Intl.DisplayNames(["en"], { type: "region" }).of(wantedCode.toUpperCase());
+        if (displayName) {
+          wantedRegionNames.add(normalizeText(displayName).toLowerCase());
+        }
+      } catch {
+        // ISO matching still works when Intl region data is unavailable.
+      }
+    }
+    if (wantedCode === "us") {
+      wantedRegionNames.add("usa");
+      wantedRegionNames.add("united states");
+      wantedRegionNames.add("united states of america");
+    }
     const filtered = priced.filter((item) => {
-      const itemCode = normalizeText(item.dialCode);
+      const itemCode = normalizeText(item.dialCode).toLowerCase();
+      const itemIsoCode = normalizeText(item.isoCode).toLowerCase();
       const itemName = normalizeText(item.apiName).toLowerCase();
-      if (wantedCode && itemCode !== wantedCode) {
+      if (
+        wantedCode
+        && itemCode !== wantedCode
+        && itemIsoCode !== wantedCode
+        && !wantedRegionNames.has(itemName)
+      ) {
         return false;
       }
       if (wantedName && !itemName.includes(wantedName) && !wantedName.includes(itemName)) {
@@ -1369,17 +1573,24 @@ export class EasySmsService {
       }
       return true;
     });
-    return this.rankHeroSmsCountryCandidates(filtered, this.resolveHeroSmsSelectionMode(undefined))[0];
+    return this.rankHeroSmsCountryCandidates(filtered, selectionMode);
   }
 
   private async selectHeroSmsCountryByStrategy(
     service: string,
     selectionMode: HeroSmsSelectionMode,
   ): Promise<HeroSmsCountryPrice | undefined> {
+    return (await this.listHeroSmsCountryCandidatesByStrategy(service, selectionMode))[0];
+  }
+
+  private async listHeroSmsCountryCandidatesByStrategy(
+    service: string,
+    selectionMode: HeroSmsSelectionMode,
+  ): Promise<HeroSmsCountryPrice[]> {
     const provider = this.requireHeroSmsProvider();
     const countries = await provider.getCountries();
     const priced = await provider.listCountryPrices(service, countries);
-    return this.rankHeroSmsCountryCandidates(priced, selectionMode)[0];
+    return this.rankHeroSmsCountryCandidates(priced, selectionMode);
   }
 
   private rankHeroSmsCountryCandidates(
@@ -1436,9 +1647,43 @@ export class EasySmsService {
     country: HeroSmsCountryPrice,
     selectionMode: HeroSmsSelectionMode,
   ): Promise<string | undefined> {
+    const best = (await this.rankHeroSmsOperatorCandidates(service, country, selectionMode))[0];
+    return best?.operator || undefined;
+  }
+
+  private async listHeroSmsOperatorAttemptCandidates(
+    service: string,
+    country: HeroSmsCountryPrice,
+    selectionMode: HeroSmsSelectionMode,
+  ): Promise<Array<string | undefined>> {
+    const ranked = await this.rankHeroSmsOperatorCandidates(service, country, selectionMode);
+    const candidates: Array<string | undefined> = [];
+    const seen = new Set<string>();
+    const append = (value: string | undefined) => {
+      const key = value || "*";
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      candidates.push(value || undefined);
+    };
+    for (const item of ranked) {
+      if (item.operator) {
+        append(item.operator);
+      }
+    }
+    append(undefined);
+    return candidates;
+  }
+
+  private async rankHeroSmsOperatorCandidates(
+    service: string,
+    country: HeroSmsCountryPrice,
+    selectionMode: HeroSmsSelectionMode,
+  ): Promise<HeroSmsOperatorQuote[]> {
     const quotes = await this.requireHeroSmsProvider().getOperatorQuoteOptions(service, country.countryId);
     if (quotes.length === 0) {
-      return undefined;
+      return [];
     }
 
     const aggregate: HeroSmsOperatorQuote = {
@@ -1481,9 +1726,7 @@ export class EasySmsService {
         }
         return (left.item.price ?? Number.MAX_SAFE_INTEGER) - (right.item.price ?? Number.MAX_SAFE_INTEGER);
       });
-
-    const best = ranked[0]?.item;
-    return best?.operator || undefined;
+    return ranked.map((entry) => entry.item);
   }
 
   private async tryAcquireReusableHeroSmsLease(
@@ -1551,11 +1794,24 @@ export class EasySmsService {
   }
 
   private getHeroSmsSuccessScore(service: string, countryId: number, operator?: string): number {
-    const stats = this.heroSmsSelectionStats.get(this.buildHeroSmsSelectionStatsKey(service, countryId, operator));
-    if (!stats) {
+    const normalizedService = normalizeText(service);
+    const normalizedOperator = normalizeText(operator);
+    const stats = normalizedOperator
+      ? this.heroSmsSelectionStats.get(this.buildHeroSmsSelectionStatsKey(service, countryId, operator))
+      : undefined;
+    const matchingStats = normalizedOperator
+      ? (stats ? [stats] : [])
+      : Array.from(this.heroSmsSelectionStats.values()).filter((item) =>
+        normalizeText(item.service) === normalizedService
+        && item.countryId === countryId
+      );
+    const assignmentCount = matchingStats.reduce((sum, item) => sum + item.assignmentCount, 0);
+    const successCount = matchingStats.reduce((sum, item) => sum + item.successCount, 0);
+    const failureCount = matchingStats.reduce((sum, item) => sum + item.failureCount, 0);
+    if (assignmentCount <= 0 && successCount <= 0 && failureCount <= 0) {
       return 0.5;
     }
-    return (stats.successCount + 1) / (stats.successCount + stats.failureCount + 2);
+    return (successCount + 1) / (successCount + failureCount + 2);
   }
 
   private buildHeroSmsSelectionStatsKey(service: string, countryId: number, operator?: string): string {
@@ -1679,13 +1935,16 @@ export class EasySmsService {
     session: EasySmsManagedSessionSnapshot | undefined,
     received: boolean,
   ): boolean {
-    if (!lease || received) {
+    if (received) {
       return false;
     }
     if (session?.lastCode || session?.lastCodeAtIso) {
       return false;
     }
-    return Date.now() >= Date.parse(lease.refundableCancelAvailableAtIso);
+    const refundableAtIso = lease?.refundableCancelAvailableAtIso
+      ?? session?.refundableCancelAvailableAtIso;
+    const refundableAtMs = Date.parse(refundableAtIso ?? "");
+    return Number.isFinite(refundableAtMs) && Date.now() >= refundableAtMs;
   }
 
   private maybeRecordHeroSmsSessionSuccess(
@@ -2770,6 +3029,7 @@ export class EasySmsService {
     return {
       ...baseSnapshot,
       providers: this.listProviderHealth(now),
+      heroSmsSelectionStats: this.listHeroSmsSelectionStats(),
       managedSessions: this.querySessions({ newestFirst: true }),
       observedMessages: this.queryStoredObservedMessages({ newestFirst: true }),
       projectedMessages: this.queryStoredProjectedMessages({ newestFirst: true }),
@@ -2782,17 +3042,47 @@ export class EasySmsService {
   hydrateRuntimeState(snapshot: EasySmsRuntimeStateSnapshot | undefined, now: Date = new Date()): void {
     this.operationalState.hydrate(snapshot, now);
     this.syntheticActivationSessions.clear();
+    this.syntheticActivationLeasesByKey.clear();
     this.managedSessions.clear();
     this.managedSessionIdByActivationId.clear();
+    this.heroSmsPaidLeasesByUpstreamActivationId.clear();
     this.observedMessages.clear();
     this.projectedMessages.clear();
     this.issuedNumbers.clear();
+    this.heroSmsSelectionStats.clear();
+    const hasPersistedHeroSmsSelectionStats = (snapshot?.heroSmsSelectionStats ?? []).length > 0;
+    for (const snapshotStats of snapshot?.heroSmsSelectionStats ?? []) {
+      const service = normalizeText(snapshotStats.service);
+      const countryId = Number(snapshotStats.countryId);
+      if (!service || !Number.isFinite(countryId)) {
+        continue;
+      }
+      const operator = normalizeText(snapshotStats.operator);
+      const stats: HeroSmsSelectionStats = {
+        service,
+        countryId,
+        operator: operator || undefined,
+        assignmentCount: Math.max(0, Number(snapshotStats.assignmentCount) || 0),
+        successCount: Math.max(0, Number(snapshotStats.successCount) || 0),
+        failureCount: Math.max(0, Number(snapshotStats.failureCount) || 0),
+        refundedCancelCount: Math.max(0, Number(snapshotStats.refundedCancelCount) || 0),
+        paidCancelCount: Math.max(0, Number(snapshotStats.paidCancelCount) || 0),
+        lastSuccessAtIso: snapshotStats.lastSuccessAtIso,
+        lastFailureAtIso: snapshotStats.lastFailureAtIso,
+      };
+      this.heroSmsSelectionStats.set(
+        this.buildHeroSmsSelectionStatsKey(service, countryId, operator || undefined),
+        stats,
+      );
+    }
     for (const session of snapshot?.managedSessions ?? []) {
       this.managedSessions.set(session.id, session);
       this.managedSessionIdByActivationId.set(session.activationId, session.id);
       if (session.sessionMode === "synthetic-public-inbox") {
         this.syntheticActivationSessions.set(session.activationId, session);
         this.hydrateSyntheticLeaseFromSession(session, now);
+      } else if (session.providerKey === "hero_sms" && session.sessionMode === "paid-api") {
+        this.hydrateHeroSmsPaidLeaseFromSession(session);
       }
       if (session.numberId) {
         this.issuedNumbers.set(session.numberId, {
@@ -2802,6 +3092,21 @@ export class EasySmsService {
           countryName: session.countryName,
           countryCode: session.countryCode,
         });
+      }
+      if (
+        !hasPersistedHeroSmsSelectionStats
+        && session.providerKey === "hero_sms"
+        && session.lastReportedOutcome
+      ) {
+        const recordedAtIso = session.lastCodeAtIso
+          || session.lastReportedOutcome.recordedAtIso
+          || session.openedAtIso;
+        this.recordHeroSmsSelectionOutcome(
+          session,
+          Boolean(session.lastCode || session.lastCodeAtIso || session.lastReportedOutcome.success),
+          false,
+          recordedAtIso,
+        );
       }
     }
     for (const message of snapshot?.observedMessages ?? []) {
@@ -2876,6 +3181,53 @@ export class EasySmsService {
       session.activationId,
     ]));
     this.syntheticActivationLeasesByKey.set(leaseKey, existing);
+  }
+
+  private hydrateHeroSmsPaidLeaseFromSession(session: EasySmsManagedSessionSnapshot): void {
+    const upstreamActivationId = Number(session.upstreamActivationId);
+    if (!Number.isFinite(upstreamActivationId) || !session.phoneNumber || !session.service) {
+      return;
+    }
+
+    const openedAtMs = Date.parse(session.openedAtIso) || Date.now();
+    const lease: HeroSmsPaidLeaseRecord = {
+      upstreamActivationId,
+      phoneNumber: session.phoneNumber,
+      service: session.service,
+      countryId: session.countryId,
+      countryCode: session.countryCode,
+      countryName: session.countryName,
+      operator: session.operator,
+      activationCost: session.activationCost,
+      selectionMode: this.resolveHeroSmsSelectionMode(session.selectionMode),
+      businessKey: normalizeText(session.businessKey) || HEROSMS_DEFAULT_BUSINESS_KEY,
+      maxBindingsPerPhone: Math.max(1, Number(session.maxBindingsPerPhone ?? 1)),
+      openedAtIso: session.openedAtIso,
+      leaseExpiresAtIso: session.leaseExpiresAtIso ?? new Date(
+        openedAtMs + this.config.providers.heroSms.leaseWindowSeconds * 1000,
+      ).toISOString(),
+      refundableCancelAvailableAtIso: session.refundableCancelAvailableAtIso ?? new Date(
+        openedAtMs + this.config.providers.heroSms.refundableCancelWindowSeconds * 1000,
+      ).toISOString(),
+      cancelledAtIso: session.cancelledAtIso,
+      completedAtIso: session.completedAtIso,
+      logicalActivationIds: [session.activationId],
+    };
+
+    const existing = this.heroSmsPaidLeasesByUpstreamActivationId.get(upstreamActivationId);
+    if (!existing) {
+      this.heroSmsPaidLeasesByUpstreamActivationId.set(upstreamActivationId, lease);
+      return;
+    }
+
+    existing.maxBindingsPerPhone = Math.max(existing.maxBindingsPerPhone, lease.maxBindingsPerPhone);
+    existing.cancelledAtIso = existing.cancelledAtIso ?? lease.cancelledAtIso;
+    existing.completedAtIso = existing.completedAtIso ?? lease.completedAtIso;
+    existing.logicalActivationIds = Array.from(new Set([
+      ...existing.logicalActivationIds,
+      session.activationId,
+    ]));
+    this.heroSmsPaidLeasesByUpstreamActivationId.set(upstreamActivationId, existing);
   }
 
   async listPublicNumbers(options: ListPublicNumbersOptions): Promise<ListPublicNumbersResult> {

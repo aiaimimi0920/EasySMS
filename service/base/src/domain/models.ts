@@ -34,7 +34,10 @@ export interface HeroSmsCountry {
 
 export interface HeroSmsCountryPrice extends HeroSmsCountry {
   service: string;
+  /** Effective chargeable price used for ordering and sorting. */
   price: number;
+  advertisedPrice?: number;
+  retailPrice?: number;
   count?: number | null;
 }
 
@@ -44,6 +47,8 @@ export interface HeroSmsOperatorQuote {
   countryId: number;
   operator: string;
   price?: number | null;
+  advertisedPrice?: number;
+  retailPrice?: number;
   count?: number | null;
   error?: string;
 }
@@ -582,6 +587,7 @@ export interface EasySmsRuntimeStateSnapshot {
   providers: SmsProviderHealthSnapshot[];
   routes: SmsProviderRouteHealthSnapshot[];
   probeHistory: SmsProviderProbeHistoryEntry[];
+  heroSmsSelectionStats?: HeroSmsSelectionStatsSnapshot[];
   managedSessions?: EasySmsManagedSessionSnapshot[];
   observedMessages?: SmsSessionMessage[];
   projectedMessages?: SmsSessionMessage[];

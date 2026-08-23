@@ -140,7 +140,7 @@ start_runtime() {
   fi
 
   if [ "$(id -u)" = "0" ] && command -v gosu >/dev/null 2>&1; then
-    if chown -R easy:easy "$STATE_DIR" "$(dirname "$CONFIG_PATH")" /app; then
+    if chown -R easy:easy "$STATE_DIR" "$(dirname "$CONFIG_PATH")"; then
       if can_start_as_easy; then
         gosu easy "$@" &
       else
@@ -179,6 +179,22 @@ start_sync_loop() {
   ) &
   SYNC_PID=$!
 }
+
+shutdown_runtime() {
+  if [ -n "${SYNC_PID:-}" ]; then
+    kill "$SYNC_PID" 2>/dev/null || true
+    wait "$SYNC_PID" 2>/dev/null || true
+  fi
+  if [ -n "${APP_PID:-}" ]; then
+    kill -TERM "$APP_PID" 2>/dev/null || true
+    wait "$APP_PID" 2>/dev/null || true
+  fi
+  exit 0
+}
+
+APP_PID=""
+SYNC_PID=""
+trap 'shutdown_runtime' TERM INT
 
 SYNC_ENABLED="false"
 SYNC_INTERVAL_SECONDS="7200"

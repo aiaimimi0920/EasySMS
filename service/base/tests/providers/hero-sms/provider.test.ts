@@ -19,12 +19,12 @@ describe("hero_sms provider helpers", () => {
     expect(countries).toHaveLength(2);
     expect(countries[0]).toMatchObject({
       countryId: 2,
-      apiName: "哈萨克斯坦",
+      apiName: "Kazakhstan",
       dialCode: "+7",
     });
     expect(countries[1]).toMatchObject({
       countryId: 16,
-      apiName: "英国",
+      apiName: "United Kingdom",
       visible: true,
       retry: true,
     });
@@ -33,8 +33,8 @@ describe("hero_sms provider helpers", () => {
   test("parses top countries and sorts by price then count", () => {
     const rows = parseHeroSmsTopCountriesResponse(
       {
-        16: { country: 16, name: "United Kingdom", price: 0.8, count: 4, phoneCode: "44" },
-        2: { country: 2, name: "Kazakhstan", price: 0.4, count: 2, phoneCode: "7" },
+        16: { country: 16, name: "United Kingdom", price: 0.7, retail_price: 0.8, count: 4, phoneCode: "44" },
+        2: { country: 2, name: "Kazakhstan", price: 0.4, retail_price: 0.45, count: 2, phoneCode: "7" },
       },
       "dr",
     );
@@ -42,7 +42,9 @@ describe("hero_sms provider helpers", () => {
     expect(rows[0]).toMatchObject({
       service: "dr",
       countryId: 2,
-      price: 0.4,
+      price: 0.45,
+      advertisedPrice: 0.4,
+      retailPrice: 0.45,
       dialCode: "+7",
     });
     expect(rows[1].countryId).toBe(16);
@@ -53,6 +55,7 @@ describe("hero_sms provider helpers", () => {
       {
         dr: {
           16: {
+            price: 0.55,
             cost: 0.63,
             count: 11,
           },
@@ -66,6 +69,8 @@ describe("hero_sms provider helpers", () => {
       countryId: 16,
       service: "dr",
       price: 0.63,
+      advertisedPrice: 0.55,
+      retailPrice: 0.63,
       count: 11,
     });
   });
@@ -101,8 +106,8 @@ describe("hero_sms provider helpers", () => {
 
     vi.spyOn(provider, "getPrices").mockResolvedValue({
       dr: {
-        16: { cost: 0.63, count: 11 },
-        2: { cost: 0.40, count: 2 },
+        16: { price: 0.55, cost: 0.63, count: 11 },
+        2: { price: 0.35, cost: 0.40, count: 2 },
       },
     });
 
@@ -112,7 +117,105 @@ describe("hero_sms provider helpers", () => {
     ]);
 
     expect(items.map((item) => item.countryId)).toEqual([2, 16]);
-    expect(items[0]).toMatchObject({ price: 0.4, count: 2, dialCode: "+7" });
+    expect(items[0]).toMatchObject({
+      price: 0.4,
+      advertisedPrice: 0.35,
+      retailPrice: 0.4,
+      count: 2,
+      dialCode: "+7",
+    });
+  });
+
+  test("normalizes structured NO_NUMBERS responses for alternate selection retries", async () => {
+    const provider = new HeroSmsActivationProvider({
+      server: { host: "127.0.0.1", port: 8080 },
+      strategy: { strictProviderMode: false, providerStrategyModeId: "aggregate-latest" },
+      maintenance: { enabled: false, intervalMs: 30000, keepRecentCount: 100, activeProbeEnabled: false, activeProbeIntervalMs: 300000, probeHistoryMaxEntries: 24, probeHistoryWindowMs: 86400000 },
+      persistence: { enabled: false, driver: "file", intervalMs: 60000, filePath: "state.json" },
+      scraping: { requestTimeoutMs: 15000, maxNumbersPerProvider: 20, userAgent: "Mozilla/5.0" },
+      providers: {
+        enabledProviders: [],
+        onlineSim: {},
+        smsToMe: {},
+        receiveSmss: {},
+        receiveSmsFreeCc: {},
+        synthetic: { leaseWindowSeconds: 1200, terminalOutcomeCooldownSeconds: 7200 },
+        heroSms: {
+          enabled: true,
+          apiKey: "demo-key",
+          baseUrl: "https://hero-sms.com/stubs/handler_api.php",
+          defaultService: "dr",
+          defaultCountry: 16,
+          selectionMode: "balanced",
+          reuseEnabled: true,
+          defaultMaxBindingsPerPhone: 1,
+          refundableCancelWindowSeconds: 120,
+          leaseWindowSeconds: 1200,
+        },
+      },
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+      JSON.stringify({ title: "NO_NUMBERS", details: "Numbers Not Found. Try Later" }),
+      { status: 502, headers: { "content-type": "application/json" } },
+    ));
+
+    try {
+      await expect(provider.createActivation({ service: "dr", country: 16 })).rejects.toMatchObject({
+        name: "ActivationProviderError",
+        statusCode: 409,
+        message: 'Activation provider "hero_sms" failed: HeroSMS has no numbers available for the requested criteria.',
+      });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  test("accepts only the expected upstream status-action acknowledgement", async () => {
+    const provider = new HeroSmsActivationProvider({
+      server: { host: "127.0.0.1", port: 8080 },
+      strategy: { strictProviderMode: false, providerStrategyModeId: "aggregate-latest" },
+      maintenance: { enabled: false, intervalMs: 30000, keepRecentCount: 100, activeProbeEnabled: false, activeProbeIntervalMs: 300000, probeHistoryMaxEntries: 24, probeHistoryWindowMs: 86400000 },
+      persistence: { enabled: false, driver: "file", intervalMs: 60000, filePath: "state.json" },
+      scraping: { requestTimeoutMs: 15000, maxNumbersPerProvider: 20, userAgent: "Mozilla/5.0" },
+      providers: {
+        enabledProviders: [],
+        onlineSim: {},
+        smsToMe: {},
+        receiveSmss: {},
+        receiveSmsFreeCc: {},
+        synthetic: { leaseWindowSeconds: 1200, terminalOutcomeCooldownSeconds: 7200 },
+        heroSms: {
+          enabled: true,
+          apiKey: "demo-key",
+          baseUrl: "https://hero-sms.com/stubs/handler_api.php",
+          defaultService: "dr",
+          defaultCountry: 16,
+          selectionMode: "balanced",
+          reuseEnabled: true,
+          defaultMaxBindingsPerPhone: 1,
+          refundableCancelWindowSeconds: 120,
+          leaseWindowSeconds: 1200,
+        },
+      },
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("ACCESS_CANCEL", { status: 200 }))
+      .mockResolvedValueOnce(new Response("BAD_STATUS", { status: 200 }));
+
+    try {
+      await expect(provider.setActivationStatus(123, "cancel")).resolves.toMatchObject({
+        requestedAction: "cancel",
+        requestedStatus: 8,
+        resultText: "ACCESS_CANCEL",
+      });
+      await expect(provider.setActivationStatus(123, "cancel")).rejects.toMatchObject({
+        name: "ActivationProviderError",
+        statusCode: 502,
+        message: 'Activation provider "hero_sms" failed: HeroSMS did not accept the cancel activation action.',
+      });
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 
   test("normalizes activation create response", () => {

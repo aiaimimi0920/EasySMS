@@ -26,6 +26,7 @@ interface HeroSmsActivationResponsePayload {
   activationId?: number | string;
   phoneNumber?: string;
   activationCost?: number | string;
+  activationOperator?: string;
 }
 
 interface HeroSmsStatusResponsePayload {
@@ -110,6 +111,8 @@ export class HeroSmsActivationProvider {
         service,
         countryId: country.countryId,
         price: parsed.price,
+        advertisedPrice: parsed.advertisedPrice,
+        retailPrice: parsed.retailPrice,
         count: parsed.count,
         apiName: parsed.apiName || country.apiName,
         dialCode: parsed.dialCode || country.dialCode,
@@ -159,6 +162,8 @@ export class HeroSmsActivationProvider {
           countryId: country,
           operator,
           price: parsed?.price ?? null,
+          advertisedPrice: parsed?.advertisedPrice,
+          retailPrice: parsed?.retailPrice,
           count: parsed?.count ?? null,
         });
       } catch (error) {
@@ -225,12 +230,20 @@ export class HeroSmsActivationProvider {
 
     const requestedStatus = mapHeroSmsStatusAction(action);
     const data = await this.request("setStatus", { id: activationId, status: requestedStatus });
+    const resultText = typeof data === "string" ? data.trim() : JSON.stringify(data);
+    const expectedResultText = expectedHeroSmsStatusActionResult(action);
+    if (resultText.toUpperCase() !== expectedResultText) {
+      throw new ActivationProviderError(
+        providerKey,
+        `HeroSMS did not accept the ${action} activation action.`,
+      );
+    }
     return {
       providerKey,
       activationId,
       requestedAction: action,
       requestedStatus,
-      resultText: typeof data === "string" ? data : JSON.stringify(data),
+      resultText,
       updatedAtIso: new Date().toISOString(),
     };
   }
@@ -279,11 +292,21 @@ export class HeroSmsActivationProvider {
 
     const rawText = (await response.text()).trim();
     const payload = parseHeroSmsApiPayload(rawText);
+    const upstreamErrorMessage = extractHeroSmsErrorMessage(payload);
+    const upstreamErrorCode = upstreamErrorMessage?.split(":", 1)[0]?.trim().toUpperCase();
+
+    if (upstreamErrorCode === "NO_NUMBERS") {
+      throw new ActivationProviderError(
+        providerKey,
+        "HeroSMS has no numbers available for the requested criteria.",
+        409,
+      );
+    }
 
     if (!response.ok) {
       throw new ActivationProviderError(
         providerKey,
-        extractHeroSmsErrorMessage(payload) || `HeroSMS HTTP ${response.status}`,
+        upstreamErrorMessage || `HeroSMS HTTP ${response.status}`,
       );
     }
 
@@ -318,7 +341,7 @@ export function parseHeroSmsCountriesResponse(data: unknown): HeroSmsCountry[] {
     countries.push({
       providerKey,
       countryId,
-      apiName: String(payload.chn ?? payload.eng ?? payload.rus ?? payload.name ?? "").trim(),
+      apiName: String(payload.eng ?? payload.name ?? payload.rus ?? payload.chn ?? "").trim(),
       isoCode: String(payload.isoCode ?? payload.iso ?? payload.code ?? payload.iso2 ?? "").trim().toUpperCase() || undefined,
       dialCode: normalizeDialCode(payload.dialCode ?? payload.phoneCode ?? payload.prefix),
       visible: parseOptionalBoolean(payload.visible),
@@ -337,7 +360,11 @@ export function parseHeroSmsTopCountriesResponse(data: unknown, service: string)
     const countryId = parseIntegerValue(
       payload.country ?? payload.countryId ?? payload.country_id ?? payload.id,
     );
-    const price = parseNumberValue(payload.price ?? payload.cost ?? payload.retail_price ?? payload.retailPrice);
+    const advertisedPrice = parseNumberValue(payload.price);
+    const retailPrice = parseNumberValue(
+      payload.retail_price ?? payload.retailPrice ?? payload.cost,
+    );
+    const price = retailPrice ?? advertisedPrice;
     if (!Number.isFinite(countryId) || price === null) {
       return;
     }
@@ -347,6 +374,8 @@ export function parseHeroSmsTopCountriesResponse(data: unknown, service: string)
       service,
       countryId,
       price,
+      advertisedPrice: advertisedPrice ?? undefined,
+      retailPrice: retailPrice ?? undefined,
       count: parseIntegerValue(payload.count ?? payload.qty ?? payload.available ?? payload.stock ?? payload.total),
       apiName: String(
         payload.name
@@ -404,7 +433,16 @@ export function extractHeroSmsCountryPrice(
   }
 
   const payload = getRecord(node);
-  const price = parseNumberValue(payload.cost ?? payload.price ?? payload.activationCost ?? payload.amount ?? payload.rate);
+  const advertisedPrice = parseNumberValue(payload.price);
+  const retailPrice = parseNumberValue(
+    payload.retail_price
+    ?? payload.retailPrice
+    ?? payload.cost
+    ?? payload.activationCost
+    ?? payload.amount
+    ?? payload.rate,
+  );
+  const price = retailPrice ?? advertisedPrice;
   if (price === null) {
     return undefined;
   }
@@ -414,6 +452,8 @@ export function extractHeroSmsCountryPrice(
     service,
     countryId,
     price,
+    advertisedPrice: advertisedPrice ?? undefined,
+    retailPrice: retailPrice ?? undefined,
     count: parseIntegerValue(payload.count ?? payload.qty ?? payload.available ?? payload.stock ?? payload.total),
     apiName: String(
       payload.name
@@ -448,7 +488,9 @@ export function normalizeHeroSmsActivationResponse(
     phoneNumber,
     service: context.service,
     countryId: context.country,
-    operator: context.operator,
+    operator: typeof payload.activationOperator === "string" && payload.activationOperator.trim()
+      ? payload.activationOperator.trim()
+      : context.operator,
     activationCost: parseNumberValue(payload.activationCost),
     createdAtIso: new Date().toISOString(),
   };
@@ -522,6 +564,19 @@ function mapHeroSmsStatusAction(action: HeroSmsActivationAction): number {
       return 6;
     case "cancel":
       return 8;
+    default:
+      throw new ValidationError(`Unsupported HeroSMS action: ${String(action)}`);
+  }
+}
+
+function expectedHeroSmsStatusActionResult(action: HeroSmsActivationAction): string {
+  switch (action) {
+    case "request-code":
+      return "ACCESS_RETRY_GET";
+    case "complete":
+      return "ACCESS_ACTIVATION";
+    case "cancel":
+      return "ACCESS_CANCEL";
     default:
       throw new ValidationError(`Unsupported HeroSMS action: ${String(action)}`);
   }
