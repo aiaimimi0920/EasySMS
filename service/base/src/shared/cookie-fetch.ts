@@ -102,8 +102,10 @@ export class WebHttpSession {
   readonly cookies = new WebCookieJar();
   private readonly fetchImpl: FetchLike;
 
-  constructor(fetchImpl: FetchLike = fetch) {
-    this.fetchImpl = fetchImpl;
+  constructor(fetchImpl?: FetchLike) {
+    this.fetchImpl = fetchImpl
+      ? (input, init) => fetchImpl(input, init)
+      : (input, init) => globalThis.fetch(input, init);
   }
 
   async request(url: string, options: CookieFetchOptions = {}): Promise<Response> {
@@ -131,7 +133,10 @@ export class WebHttpSession {
 
       let response: Response;
       try {
-        response = await this.fetchImpl(currentUrl, {
+        const invokeFetch: FetchLike = options.fetchImpl
+          ? (input, init) => options.fetchImpl!(input, init)
+          : this.fetchImpl;
+        response = await invokeFetch(currentUrl, {
           method: currentMethod,
           headers: requestHeaders,
           body: currentMethod === "GET" || currentMethod === "HEAD" ? undefined : currentBody,

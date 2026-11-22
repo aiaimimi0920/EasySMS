@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { D1DatabaseLike, D1PreparedStatementLike } from "../../src/persistence/d1-store.js";
+import { WebHttpSession } from "../../src/shared/cookie-fetch.js";
 import { createEasySmsWorker, type EasySmsWorkerEnv } from "../../src/worker/index.js";
 
 interface StoredStateRow {
@@ -228,5 +229,27 @@ describe("Cloudflare Worker runtime & D1 persistence", () => {
       previewEnv,
     );
     expect(blockedProbe.status).toBe(403);
+  });
+
+  it("invokes globalThis.fetch with unbound receiver in WebHttpSession (workerd WebIDL compatibility)", async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async function strictWorkerdFetch(this: unknown) {
+        if (this !== undefined && this !== globalThis) {
+          throw new TypeError("Illegal invocation: function called with incorrect `this` reference.");
+        }
+        return new Response("{\"ok\":true}", {
+          status: 200,
+          headers: { "Content-Type": "application/json", "Set-Cookie": "sid=abc123; Path=/" },
+        });
+      } as typeof fetch;
+
+      const session = new WebHttpSession();
+      const text = await session.getText("https://example.com/test");
+      expect(text).toBe("{\"ok\":true}");
+      expect(session.cookies.get("sid")).toBe("abc123");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

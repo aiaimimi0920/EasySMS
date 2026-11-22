@@ -6,6 +6,7 @@ import {
 } from "../http/web-router.js";
 import {
   loadEasySmsRuntimeStateFromD1,
+  peekEasySmsRuntimeStateRevisionFromD1,
   saveEasySmsRuntimeStateToD1,
   type D1DatabaseLike,
 } from "../persistence/d1-store.js";
@@ -222,20 +223,27 @@ export function createEasySmsWorker() {
     const nowMs = Date.now();
     if (env.STATE_DB && (forceReloadFromD1 || nowMs - cached.lastHydratedAtMs > 5_000)) {
       try {
-        const stored = await loadEasySmsRuntimeStateFromD1(env.STATE_DB);
-        if (stored && stored.revision !== cached.lastHydratedRevision) {
-          cached.service.hydrateRuntimeState(stored.snapshot);
-          cached.lastHydratedRevision = stored.revision;
-        } else if (!stored && cached.lastHydratedRevision === 0) {
-          cached.service.hydrateRuntimeState(undefined);
+        let shouldReadSnapshot = forceReloadFromD1 || cached.lastHydratedRevision === 0;
+        if (!shouldReadSnapshot) {
+          const remoteRevision = await peekEasySmsRuntimeStateRevisionFromD1(env.STATE_DB);
+          shouldReadSnapshot = remoteRevision !== cached.lastHydratedRevision;
+        }
+        if (shouldReadSnapshot) {
+          const stored = await loadEasySmsRuntimeStateFromD1(env.STATE_DB);
+          if (stored && stored.revision !== cached.lastHydratedRevision) {
+            cached.service.hydrateRuntimeState(stored.snapshot);
+            cached.lastHydratedRevision = stored.revision;
+          } else if (!stored && cached.lastHydratedRevision === 0) {
+            cached.service.hydrateRuntimeState(undefined);
+          }
+          cached.service.recordRuntimeStateLoad({
+            status: stored ? "loaded" : "empty",
+            detail: stored
+              ? `Loaded runtime state revision ${stored.revision} from Cloudflare D1.`
+              : "No persisted runtime state row found in Cloudflare D1 yet.",
+          });
         }
         cached.lastHydratedAtMs = nowMs;
-        cached.service.recordRuntimeStateLoad({
-          status: stored ? "loaded" : "empty",
-          detail: stored
-            ? `Loaded runtime state revision ${stored.revision} from Cloudflare D1.`
-            : "No persisted runtime state row found in Cloudflare D1 yet.",
-        });
       } catch (error) {
         cached.service.recordRuntimeStateLoad({
           status: "failed",

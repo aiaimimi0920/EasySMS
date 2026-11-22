@@ -21,6 +21,7 @@ export interface EasySmsD1StoredState {
 
 const RUNTIME_STATE_SLOT = "primary";
 const RUNTIME_STATE_SCHEMA_VERSION = 1;
+const initializedDbs = new WeakSet<D1DatabaseLike>();
 
 export async function sha256HexWeb(input: string): Promise<string> {
   const bytes = new TextEncoder().encode(input);
@@ -31,12 +32,28 @@ export async function sha256HexWeb(input: string): Promise<string> {
 }
 
 export async function ensureEasySmsD1Schema(db: D1DatabaseLike): Promise<void> {
+  if (initializedDbs.has(db)) {
+    return;
+  }
   await db.prepare(
     "CREATE TABLE IF NOT EXISTS easysms_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL)",
   ).run();
   await db.prepare(
     "CREATE TABLE IF NOT EXISTS easysms_runtime_state (slot TEXT PRIMARY KEY NOT NULL, revision INTEGER NOT NULL, schema_version INTEGER NOT NULL, payload_json TEXT NOT NULL, sha256 TEXT NOT NULL, updated_at TEXT NOT NULL)",
   ).run();
+  initializedDbs.add(db);
+}
+
+export async function peekEasySmsRuntimeStateRevisionFromD1(
+  db: D1DatabaseLike,
+): Promise<number | undefined> {
+  await ensureEasySmsD1Schema(db);
+  const row = await db.prepare(
+    "SELECT revision FROM easysms_runtime_state WHERE slot = ?",
+  )
+    .bind(RUNTIME_STATE_SLOT)
+    .first<{ revision: number }>();
+  return row ? Number(row.revision) || 1 : undefined;
 }
 
 export async function loadEasySmsRuntimeStateFromD1(

@@ -2,7 +2,7 @@
   "schemaVersion": 3,
   "id": "easysms",
   "name": "EasySms",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "entrypoint": "springbok.ps1",
   "runtime": {
     "runner": "ubuntu-24.04",
