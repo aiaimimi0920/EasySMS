@@ -2,7 +2,7 @@
   "schemaVersion": 3,
   "id": "easysms",
   "name": "EasySms",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "entrypoint": "springbok.ps1",
   "runtime": {
     "runner": "ubuntu-24.04",
@@ -15,7 +15,8 @@
     "update": { "timeoutSeconds": 900 },
     "verify": { "timeoutSeconds": 180 },
     "preview": { "timeoutSeconds": 900 },
-    "destroy-preview": { "timeoutSeconds": 600 }
+    "destroy-preview": { "timeoutSeconds": 600 },
+    "repair": { "timeoutSeconds": 900 }
   },
   "secrets": [
     "EASYSMS_CLOUDFLARE_API_TOKEN",
@@ -29,5 +30,33 @@
     "EASYSMS_RECEIVESMSS_PASSWORD",
     "EASYSMS_RECEIVESMSFREECC_EMAIL",
     "EASYSMS_RECEIVESMSFREECC_PASSWORD"
+  ],
+  "repairs": [
+    {
+      "id": "reconcile-domain-verify-after-deploy",
+      "name": "核对自定义域名绑定并完成部署收尾",
+      "fromErrorCodes": [
+        "EASYSMS_SBA_DOMAIN_VERIFY_FAILED__DOMAIN_VERIFY",
+        "EASYSMS_SBA_PUBLIC_RELEASE_MISMATCH__VERIFY_RELEASE"
+      ],
+      "fromActions": [
+        "deploy",
+        "update",
+        "repair"
+      ],
+      "secretNames": [
+        "EASYSMS_CLOUDFLARE_API_TOKEN",
+        "EASYSMS_API_KEY",
+        "EASYSMS_BACKUP_PASSPHRASE",
+        "EASYSMS_HEROSMS_API_KEY",
+        "EASYSMS_ONLINESIM_API_KEY",
+        "EASYSMS_SMSTOME_EMAIL",
+        "EASYSMS_SMSTOME_PASSWORD",
+        "EASYSMS_RECEIVESMSS_USERNAME",
+        "EASYSMS_RECEIVESMSS_PASSWORD",
+        "EASYSMS_RECEIVESMSFREECC_EMAIL",
+        "EASYSMS_RECEIVESMSFREECC_PASSWORD"
+      ]
+    }
   ]
 }

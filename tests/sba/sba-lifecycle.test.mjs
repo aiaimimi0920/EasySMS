@@ -68,6 +68,11 @@ class FakeCloudflareState {
     this.databases = new Map();
     this.buckets = new Map();
     this.workers = new Map();
+    this.zones = new Map([
+      ["yamiyu.com", { id: "44444444444444444444444444444444", name: "yamiyu.com", status: "active", account: { id: ACCOUNT_ID } }],
+    ]);
+    this.workerDomains = new Map();
+    this.lagNextDomainVerifyReads = 0;
     this.failNextWorkerUpload = false;
   }
 
@@ -144,10 +149,15 @@ class FakeCloudflareState {
       const method = (init.method || "GET").toUpperCase();
 
       // Route live Worker origin requests into the actual bundled EasySms Worker!
-      if (url.hostname.endsWith(`.${SUBDOMAIN}.workers.dev`)) {
-        const workerName = url.hostname.slice(0, url.hostname.length - `.${SUBDOMAIN}.workers.dev`.length);
-        const deployed = this.workers.get(workerName);
-        if (!deployed || !deployed.subdomainEnabled) {
+      if (url.hostname.endsWith(`.${SUBDOMAIN}.workers.dev`) || this.workerDomains.has(url.hostname)) {
+        const workerName = url.hostname.endsWith(`.${SUBDOMAIN}.workers.dev`)
+          ? url.hostname.slice(0, url.hostname.length - `.${SUBDOMAIN}.workers.dev`.length)
+          : this.workerDomains.get(url.hostname)?.service;
+        const deployed = workerName ? this.workers.get(workerName) : null;
+        const isRouted = url.hostname.endsWith(`.${SUBDOMAIN}.workers.dev`)
+          ? Boolean(deployed?.subdomainEnabled)
+          : Boolean(deployed && this.workerDomains.has(url.hostname));
+        if (!deployed || !isRouted) {
           return new Response("Worker not routed", { status: 404 });
         }
         const env = {};
@@ -348,6 +358,55 @@ class FakeCloudflareState {
           const existing = this.workers.get(workerName);
           return okJson({ enabled: Boolean(existing?.subdomainEnabled), previews_enabled: false });
         }
+      }
+
+      // Zones & Worker Custom Domains endpoints
+      if (path === "/zones" && method === "GET") {
+        const name = url.searchParams.get("name") || "";
+        const zone = this.zones.get(name);
+        return okJson(zone ? [zone] : []);
+      }
+      if (path === `/accounts/${ACCOUNT_ID}/workers/domains` && method === "GET") {
+        if (this.lagNextDomainVerifyReads > 0) {
+          this.lagNextDomainVerifyReads -= 1;
+          return new Response(JSON.stringify({ success: true, errors: null, messages: [], result: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const hostname = url.searchParams.get("hostname") || "";
+        const rows = Array.from(this.workerDomains.values()).filter((d) => !hostname || d.hostname === hostname);
+        return new Response(JSON.stringify({ success: true, errors: null, messages: [], result: rows }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (path === `/accounts/${ACCOUNT_ID}/workers/domains` && method === "PUT") {
+        const body = JSON.parse(String(init.body));
+        const record = {
+          id: "55555555555555555555555555555555",
+          hostname: body.hostname,
+          service: body.service,
+          zone_id: body.zone_id,
+          zone_name: body.hostname.split(".").slice(1).join("."),
+          environment: "production",
+          enabled: true,
+          previews_enabled: false,
+        };
+        this.workerDomains.set(body.hostname, record);
+        return new Response(JSON.stringify(record), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const domainDeleteMatch = path.match(/^\/accounts\/[^/]+\/workers\/domains\/([^/]+)$/);
+      if (domainDeleteMatch && method === "DELETE") {
+        for (const [host, rec] of this.workerDomains.entries()) {
+          if (rec.id === domainDeleteMatch[1]) {
+            this.workerDomains.delete(host);
+          }
+        }
+        return new Response("", { status: 200 });
       }
 
       return errJson(404, 9999);
@@ -676,6 +735,127 @@ test("Fail-closed vs unknown boundaries: pre-write failure returns failed; mid-w
     assert.equal(midWriteRun.result.status, "unknown");
     assert.match(midWriteRun.result.errorCode, /__WORKER_UPLOAD$/);
     assert.equal(Object.hasOwn(midWriteRun.result, "diagnostics"), false);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("Custom domain eventual consistency & SBA repair (1.0.0 unknown -> 1.0.1 succeeded)", async () => {
+  const workerBundleUrl = new URL("../../service/base/dist/worker.mjs", import.meta.url).href;
+  const workerModule = await import(workerBundleUrl);
+  const fakeCf = new FakeCloudflareState(workerModule);
+  fakeCf.createDatabase(PROD_DB_ID, "easysms-prod-state");
+  fakeCf.createPrivateBucket(PROD_BUCKET);
+
+  const tempDir = await mkdtemp(join(tmpdir(), "easysms-sba-repair-"));
+  try {
+    const customConfig = buildConfig({
+      envName: "prod",
+      dbId: PROD_DB_ID,
+      dbName: "easysms-prod-state",
+      bucketName: PROD_BUCKET,
+      customOrigin: "https://sms.yamiyu.com",
+    });
+    const secretsEnv = createSecretsEnv();
+    const fetchImpl = fakeCf.buildFetch();
+
+    // Simulate 3 eventually consistent empty GETs right after PUT /workers/domains (1 inspect + 3 lag reads)
+    fakeCf.lagNextDomainVerifyReads = 3;
+    const deployRun = await runActionWithManifestVersion(
+      tempDir,
+      "1.0.0",
+      {
+        schemaVersion: 3,
+        taskId: INSTANCE_ID,
+        action: "deploy",
+        repository: "aiaimimi0920/EasySMS",
+        sourceSha: SHA_V1,
+        applicationId: "easysms",
+        applicationVersion: "1.0.0",
+        environment: "prod",
+        configuration: customConfig,
+        previous: null,
+      },
+      {
+        env: secretsEnv,
+        fetchImpl,
+      },
+    );
+    assert.equal(deployRun.exitCode, 0, JSON.stringify(deployRun.result));
+    assert.equal(deployRun.result.status, "succeeded");
+
+    // Mutate state in D1 via https://sms.yamiyu.com, then run repair -> 1.0.1
+    const mutateResp = await fetchImpl("https://sms.yamiyu.com/admin/providers/onlinesim/disable", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secretsEnv.EASYSMS_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ reason: "preserve_across_repair", durationSeconds: 3600 }),
+    });
+    assert.equal(mutateResp.status, 200);
+
+    const repairRun = await runActionWithManifestVersion(
+      tempDir,
+      "1.0.1",
+      {
+        schemaVersion: 3,
+        taskId: "dc-" + "6".repeat(32),
+        action: "repair",
+        repository: "aiaimimi0920/EasySMS",
+        sourceSha: SHA_V2,
+        applicationId: "easysms",
+        applicationVersion: "1.0.1",
+        environment: "prod",
+        configuration: customConfig,
+        previous: { sourceSha: SHA_V1, applicationVersion: "1.0.0" },
+        context: {
+          repairId: "reconcile-domain-verify-after-deploy",
+          parentTaskId: INSTANCE_ID,
+          parentRunId: 44993543782,
+          requestDigest: "e".repeat(64),
+          resultDigest: "f".repeat(64),
+          errorCode: "EASYSMS_SBA_DOMAIN_VERIFY_FAILED__DOMAIN_VERIFY",
+        },
+      },
+      {
+        env: secretsEnv,
+        fetchImpl,
+      },
+    );
+    assert.equal(repairRun.exitCode, 0, JSON.stringify(repairRun.result));
+    assert.equal(repairRun.result.status, "succeeded");
+    for (const checkId of ["unchanged-resources-verified", "data-preserved", "repair-completed", "service-ready"]) {
+      assert.ok(repairRun.result.checks.some((c) => c.id === checkId && c.passed), `missing repair check ${checkId}`);
+    }
+    assert.equal(fakeCf.buckets.get(PROD_BUCKET).objects.size, 1);
+
+    // Verify independent read-only verify on 1.0.1 head (SUITE-06)
+    const verifyEnv = Object.fromEntries(
+      Object.keys(secretsEnv).map((k) => [k, "verification-not-applicable"]),
+    );
+    const verifyAfterRepair = await runActionWithManifestVersion(
+      tempDir,
+      "1.0.1",
+      {
+        schemaVersion: 3,
+        taskId: "dc-" + "7".repeat(32),
+        action: "verify",
+        repository: "aiaimimi0920/EasySMS",
+        sourceSha: SHA_V2,
+        applicationId: "easysms",
+        applicationVersion: "1.0.1",
+        environment: "prod",
+        configuration: customConfig,
+        previous: { sourceSha: SHA_V2, applicationVersion: "1.0.1" },
+      },
+      {
+        env: verifyEnv,
+        fetchImpl,
+      },
+    );
+    assert.equal(verifyAfterRepair.exitCode, 0);
+    assert.equal(verifyAfterRepair.result.status, "succeeded");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

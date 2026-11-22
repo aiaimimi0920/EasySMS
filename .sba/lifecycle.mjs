@@ -92,12 +92,13 @@ function buildWorkerMetadata({
   };
 }
 
-async function bindWorkerIngress(cf, config, { allowExistingSameWorker = false } = {}) {
+async function bindWorkerIngress(cf, config, { allowExistingSameWorker = false, propagationDelayMs = 2_000 } = {}) {
   if (config.isWorkersDev) {
     await cf.enableAndVerifyWorkersDevSubdomain(config.workerName);
   } else {
     await cf.bindAndVerifyCustomDomain(config.workerName, config.originHostname, {
       allowExistingSameWorker,
+      verifyDelayMs: propagationDelayMs,
     });
   }
 }
@@ -194,7 +195,7 @@ export async function executeSbaAction({
     await cf.uploadWorkerAndVerify(config.workerName, metadata, bundleBuffer);
     addCheck("worker-published", true);
 
-    await bindWorkerIngress(cf, config, { allowExistingSameWorker: false });
+    await bindWorkerIngress(cf, config, { allowExistingSameWorker: false, propagationDelayMs });
     addCheck("ingress-verified", true);
 
     await verifyPublicAndProtectedOrigin({
@@ -287,7 +288,7 @@ export async function executeSbaAction({
     await cf.uploadWorkerAndVerify(config.workerName, metadata, bundleBuffer);
     addCheck("worker-published", true);
 
-    await bindWorkerIngress(cf, config, { allowExistingSameWorker: true });
+    await bindWorkerIngress(cf, config, { allowExistingSameWorker: true, propagationDelayMs });
     addCheck("ingress-verified", true);
 
     const postSnapshot = await cf.exportD1Snapshot(config.databaseId);
@@ -314,6 +315,114 @@ export async function executeSbaAction({
     });
     addCheck("release-verified", true);
     addCheck("auth-enforced", true);
+    addCheck("service-ready", true);
+    return { checks };
+  }
+
+  if (request.action === "repair") {
+    requireCondition(
+      request.context?.repairId === "reconcile-domain-verify-after-deploy",
+      "EASYSMS_SBA_UNSUPPORTED_REPAIR_ID",
+      { failedStep: "preflight-check" },
+    );
+
+    await cf.verifyD1Database(config.databaseId, config.databaseName);
+    await cf.verifyPrivateR2Bucket(config.backupBucketName);
+
+    const currentMeta = await cf.readD1Meta(config.databaseId);
+    const matchesParentBaseline = currentMeta
+      && currentMeta.application_id === "easysms"
+      && currentMeta.release_version === request.previous.applicationVersion
+      && currentMeta.release_sha === request.previous.sourceSha
+      && currentMeta.environment === request.environment
+      && currentMeta.purpose === "production"
+      && currentMeta.inventory_digest === config.inventoryDigest;
+    requireCondition(
+      Boolean(matchesParentBaseline),
+      "EASYSMS_SBA_REPAIR_BASELINE_MISMATCH",
+      { failedStep: "preflight-check" },
+    );
+
+    const existingWorker = await cf.getWorkerSettingsOrAbsent(config.workerName);
+    requireCondition(
+      existingWorker
+        && Array.isArray(existingWorker.tags)
+        && existingWorker.tags.includes(`easysms-sba:${config.inventoryDigest}`)
+        && existingWorker.tags.includes(`easysms-sha:${request.previous.sourceSha}`)
+        && existingWorker.tags.includes(`easysms-version:${request.previous.applicationVersion}`),
+      "EASYSMS_SBA_REPAIR_WORKER_DRIFT",
+      { failedStep: "preflight-check" },
+    );
+    addCheck("unchanged-resources-verified", true);
+
+    const metadata = buildWorkerMetadata({
+      config,
+      request,
+      purpose: "production",
+      secrets: env,
+    });
+    const bundleBuffer = await bundleBuilder(repoRoot);
+
+    const preSnapshot = await cf.exportD1Snapshot(config.databaseId);
+    const stateDigestBefore = sha256Hex(canonicalJson(preSnapshot.stateRows));
+    const sealed = sealEncryptedBackup(preSnapshot, backupPassphrase, {
+      taskId: request.taskId,
+      parentTaskId: request.context.parentTaskId,
+      repairId: request.context.repairId,
+      environment: request.environment,
+      previousVersion: request.previous.applicationVersion,
+      previousSha: request.previous.sourceSha,
+      targetVersion: request.applicationVersion,
+      targetSha: request.sourceSha,
+    });
+    const backupKey = `backups/${request.taskId}-${Date.now()}.enc.json`;
+    await cf.putR2ObjectText(config.backupBucketName, backupKey, JSON.stringify(sealed.envelope));
+
+    const readBackText = await cf.getR2ObjectText(config.backupBucketName, backupKey);
+    const verifiedBackup = openEncryptedBackup(JSON.parse(readBackText), backupPassphrase);
+    requireCondition(
+      sha256Hex(canonicalJson(verifiedBackup.payload.stateRows)) === stateDigestBefore,
+      "EASYSMS_SBA_BACKUP_READBACK_MISMATCH",
+      { failedStep: "backup-verify", uncertain: true },
+    );
+    addCheck("backup-created", true);
+
+    await cf.applyD1Schema(config.databaseId, loadMigrationStatements(repoRoot));
+    await cf.writeD1Meta(config.databaseId, {
+      application_id: "easysms",
+      release_version: request.applicationVersion,
+      release_sha: request.sourceSha,
+      environment: request.environment,
+      purpose: "production",
+      inventory_digest: config.inventoryDigest,
+    });
+
+    await cf.uploadWorkerAndVerify(config.workerName, metadata, bundleBuffer);
+    await bindWorkerIngress(cf, config, { allowExistingSameWorker: true, propagationDelayMs });
+
+    const postSnapshot = await cf.exportD1Snapshot(config.databaseId);
+    const stateDigestAfter = sha256Hex(canonicalJson(postSnapshot.stateRows));
+    requireCondition(
+      stateDigestAfter === stateDigestBefore,
+      "EASYSMS_SBA_DATA_PRESERVATION_FAILED",
+      { failedStep: "data-verify", uncertain: true },
+    );
+    addCheck("data-preserved", true);
+
+    await verifyPublicAndProtectedOrigin({
+      origin: config.workerOrigin,
+      expectedRelease: {
+        applicationId: "easysms",
+        applicationVersion: request.applicationVersion,
+        sourceSha: request.sourceSha,
+        environment: request.environment,
+        purpose: "production",
+      },
+      apiKey: env.EASYSMS_API_KEY,
+      fetchImpl,
+      propagationDelayMs,
+    });
+    addCheck("repair-completed", true);
     addCheck("service-ready", true);
     return { checks };
   }
@@ -415,7 +524,7 @@ export async function executeSbaAction({
     await cf.uploadWorkerAndVerify(config.workerName, metadata, bundleBuffer);
     addCheck("worker-published", true);
 
-    await bindWorkerIngress(cf, config, { allowExistingSameWorker: false });
+    await bindWorkerIngress(cf, config, { allowExistingSameWorker: false, propagationDelayMs });
     addCheck("ingress-verified", true);
 
     await verifyPublicAndProtectedOrigin({

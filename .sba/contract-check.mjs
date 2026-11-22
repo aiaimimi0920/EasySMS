@@ -65,7 +65,14 @@ export function parseAndValidateRequest(rawText, manifest) {
   }
 
   requireCondition(isPlainObject(request), "EASYSMS_SBA_REQUEST_INVALID", { failedStep: "request-validate" });
-  const allowedActions = ["deploy", "update", "verify", "preview", "destroy-preview"];
+  const allowedActions = [
+    "deploy",
+    "update",
+    "verify",
+    "preview",
+    "destroy-preview",
+    ...(Object.hasOwn(manifest?.actions ?? {}, "repair") ? ["repair"] : []),
+  ];
   requireCondition(
     request.schemaVersion === 3
       && IDENTIFIER_RE.test(String(request.taskId ?? ""))
@@ -92,7 +99,7 @@ export function parseAndValidateRequest(rawText, manifest) {
       { failedStep: "request-validate" },
     );
     const cmp = compareVersions(request.applicationVersion, request.previous.applicationVersion);
-    if (request.action === "update" || request.action === "preview") {
+    if (request.action === "update" || request.action === "preview" || request.action === "repair") {
       requireCondition(
         cmp > 0 && request.sourceSha !== request.previous.sourceSha,
         "EASYSMS_SBA_RELEASE_PROGRESSION_INVALID",
@@ -126,6 +133,28 @@ export function parseAndValidateRequest(rawText, manifest) {
         && Array.isArray(request.context.resources)
         && request.context.resources.length > 0,
       "EASYSMS_SBA_DESTROY_CONTEXT_INVALID",
+      { failedStep: "request-validate" },
+    );
+  } else if (request.action === "repair") {
+    const repairEntry = Array.isArray(manifest?.repairs)
+      ? manifest.repairs.find((row) => row?.id === request.context?.repairId)
+      : null;
+    requireCondition(
+      isPlainObject(request.context)
+        && IDENTIFIER_RE.test(String(request.context.repairId ?? ""))
+        && /^dc-[a-f0-9]{32}$/.test(String(request.context.parentTaskId ?? ""))
+        && request.context.parentTaskId !== request.taskId
+        && Number.isSafeInteger(request.context.parentRunId)
+        && request.context.parentRunId > 0
+        && /^[a-f0-9]{64}$/.test(String(request.context.requestDigest ?? ""))
+        && /^[a-f0-9]{64}$/.test(String(request.context.resultDigest ?? ""))
+        && /^[A-Z][A-Z0-9_]{1,79}$/.test(String(request.context.errorCode ?? ""))
+        && Boolean(repairEntry)
+        && Array.isArray(repairEntry.fromErrorCodes)
+        && repairEntry.fromErrorCodes.includes(request.context.errorCode)
+        && !Object.hasOwn(request.context, "preview")
+        && !Object.hasOwn(request.context, "cleanup"),
+      "EASYSMS_SBA_REPAIR_CONTEXT_INVALID",
       { failedStep: "request-validate" },
     );
   }

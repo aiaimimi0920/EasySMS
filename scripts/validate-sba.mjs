@@ -99,6 +99,36 @@ export async function validateEasySmsSba(directory = repoRoot) {
     assert(SECRET_RE.test(secret) && !RESERVED_ENV_RE.test(secret), `invalid or reserved secret '${secret}'`);
   }
 
+  assert(
+    Object.hasOwn(manifest.actions, "repair") === Object.hasOwn(manifest, "repairs"),
+    "manifest.actions.repair and manifest.repairs must be paired",
+  );
+  if (Object.hasOwn(manifest, "repairs")) {
+    assert(Array.isArray(manifest.repairs) && manifest.repairs.length >= 1 && manifest.repairs.length <= 11, "manifest.repairs invalid");
+    const seenRepairIds = new Set();
+    for (const repair of manifest.repairs) {
+      assertExactKeys(
+        repair,
+        ["id", "name", "fromErrorCodes", "secretNames"],
+        ["fromActions", "resumeCleanup"],
+        "manifest.repairs[]",
+      );
+      assert(IDENTIFIER_RE.test(repair.id) && !seenRepairIds.has(repair.id), `invalid or duplicate repair id '${repair.id}'`);
+      seenRepairIds.add(repair.id);
+      assert(typeof repair.name === "string" && repair.name.trim().length > 0 && repair.name.length <= 80, "repair.name invalid");
+      assert(Array.isArray(repair.fromErrorCodes) && repair.fromErrorCodes.length > 0, "repair.fromErrorCodes invalid");
+      for (const code of repair.fromErrorCodes) {
+        assert(/^[A-Z][A-Z0-9_]{1,79}$/.test(code), `invalid repair errorCode '${code}'`);
+      }
+      assert(
+        Array.isArray(repair.secretNames)
+          && new Set(repair.secretNames).size === repair.secretNames.length
+          && repair.secretNames.every((name) => manifest.secrets.includes(name)),
+        "repair.secretNames must be a unique subset of manifest.secrets",
+      );
+    }
+  }
+
   assertExactKeys(
     declaration,
     ["schemaVersion", "target", "accountPath", "accountMode", "accounts", "defaults", "fields", "resources", "targets"],

@@ -62,6 +62,9 @@ export class CloudflareApiClient {
     );
 
     const rawText = await response.text();
+    if (response.ok && method === "DELETE" && !rawText.trim()) {
+      return null;
+    }
     let parsed;
     try {
       parsed = rawText ? JSON.parse(rawText) : null;
@@ -470,7 +473,11 @@ export class CloudflareApiClient {
     );
   }
 
-  async bindAndVerifyCustomDomain(workerName, hostname, { allowExistingSameWorker = false } = {}) {
+  async bindAndVerifyCustomDomain(
+    workerName,
+    hostname,
+    { allowExistingSameWorker = false, maxVerifyAttempts = 24, verifyDelayMs = 3_000 } = {},
+  ) {
     const zoneName = hostname.split(".").slice(1).join(".");
     const zones = await this.requestJson(
       "GET",
@@ -484,12 +491,16 @@ export class CloudflareApiClient {
     );
     const zoneId = zones[0].id;
 
-    const existing = await this.requestJson(
+    const existingRows = await this.requestJson(
       "GET",
       `/accounts/${this.accountId}/workers/domains?hostname=${encodeURIComponent(hostname)}`,
       { step: "domain-inspect", workerDomainResponse: true },
     );
-    requireCondition(Array.isArray(existing) && existing.length <= 1, "EASYSMS_SBA_DOMAIN_CONFLICT", {
+    requireCondition(Array.isArray(existingRows), "EASYSMS_SBA_DOMAIN_CONFLICT", {
+      failedStep: "domain-inspect",
+    });
+    const existing = existingRows.filter((item) => item?.hostname === hostname);
+    requireCondition(existing.length <= 1, "EASYSMS_SBA_DOMAIN_CONFLICT", {
       failedStep: "domain-inspect",
     });
 
@@ -520,30 +531,48 @@ export class CloudflareApiClient {
       },
     );
 
-    const verified = await this.requestJson(
-      "GET",
-      `/accounts/${this.accountId}/workers/domains?hostname=${encodeURIComponent(hostname)}`,
-      { step: "domain-verify", workerDomainResponse: true },
-    );
-    requireCondition(
-      Array.isArray(verified)
-        && verified.length === 1
-        && verified[0]?.hostname === hostname
-        && verified[0]?.service === workerName
-        && verified[0]?.zone_id === zoneId,
-      "EASYSMS_SBA_DOMAIN_VERIFY_FAILED",
-      { failedStep: "domain-verify", uncertain: true },
-    );
-    return verified[0];
+    let verifiedMatch = null;
+    const attempts = Math.max(1, Number(maxVerifyAttempts) || 1);
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const verifiedRows = await this.requestJson(
+        "GET",
+        `/accounts/${this.accountId}/workers/domains?hostname=${encodeURIComponent(hostname)}`,
+        { step: "domain-verify", workerDomainResponse: true },
+      );
+      const matched = Array.isArray(verifiedRows)
+        ? verifiedRows.filter((item) => item?.hostname === hostname)
+        : null;
+      if (
+        Array.isArray(matched)
+        && matched.length === 1
+        && matched[0]?.service === workerName
+        && matched[0]?.zone_id === zoneId
+      ) {
+        verifiedMatch = matched[0];
+        break;
+      }
+      if (attempt < attempts - 1 && verifyDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, verifyDelayMs));
+      }
+    }
+
+    requireCondition(verifiedMatch !== null, "EASYSMS_SBA_DOMAIN_VERIFY_FAILED", {
+      failedStep: "domain-verify",
+      uncertain: true,
+    });
+    return verifiedMatch;
   }
 
   async unbindCustomDomainIfPresent(hostname, expectedWorkerName) {
-    const existing = await this.requestJson(
+    const existingRows = await this.requestJson(
       "GET",
       `/accounts/${this.accountId}/workers/domains?hostname=${encodeURIComponent(hostname)}`,
-      { step: "domain-unbind-inspect" },
+      { step: "domain-unbind-inspect", workerDomainResponse: true },
     );
-    if (!Array.isArray(existing) || existing.length === 0) {
+    const existing = Array.isArray(existingRows)
+      ? existingRows.filter((item) => item?.hostname === hostname)
+      : [];
+    if (existing.length === 0) {
       return;
     }
     requireCondition(
@@ -556,11 +585,14 @@ export class CloudflareApiClient {
       `/accounts/${this.accountId}/workers/domains/${existing[0].id}`,
       { step: "domain-unbind", isWrite: true },
     );
-    const after = await this.requestJson(
+    const afterRows = await this.requestJson(
       "GET",
       `/accounts/${this.accountId}/workers/domains?hostname=${encodeURIComponent(hostname)}`,
-      { step: "domain-unbind-verify" },
+      { step: "domain-unbind-verify", workerDomainResponse: true },
     );
+    const after = Array.isArray(afterRows)
+      ? afterRows.filter((item) => item?.hostname === hostname)
+      : null;
     requireCondition(Array.isArray(after) && after.length === 0, "EASYSMS_SBA_DOMAIN_UNBIND_UNCONFIRMED", {
       failedStep: "domain-unbind-verify",
       uncertain: true,
