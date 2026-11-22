@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { EasySmsError } from "../domain/errors.js";
 import type { EasySmsRuntimeConfig } from "../domain/models.js";
 import type { EasySmsService } from "../service/easy-sms-service.js";
-import { readJsonBody, writeJson } from "../shared/index.js";
+import { readJsonBody, redactSensitiveText, writeJson } from "../shared/index.js";
 import { EasySmsHttpHandler } from "./handler.js";
 import { handleAdminRoute } from "./routes/admin.js";
 import { handleInternalRoute } from "./routes/internal.js";
@@ -25,11 +25,13 @@ function isUnauthenticatedAllowedPath(path: string): boolean {
 
 function writeError(response: ServerResponse, error: unknown): void {
   if (error instanceof EasySmsError) {
-    writeJson(response, error.statusCode, { error: error.message });
+    writeJson(response, error.statusCode, { error: redactSensitiveText(error.message) });
     return;
   }
 
-  writeJson(response, 500, { error: error instanceof Error ? error.message : "Internal server error." });
+  writeJson(response, 500, {
+    error: error instanceof Error ? redactSensitiveText(error.message) : "Internal server error.",
+  });
 }
 
 export function startHttpServer(
@@ -71,7 +73,14 @@ export function startHttpServer(
         path,
         url,
         handler,
-        response,
+        writeText: (statusCode: number, body: string) => {
+          const byteLength = new TextEncoder().encode(body).byteLength;
+          response.writeHead(statusCode, {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Content-Length": byteLength.toString(),
+          });
+          response.end(body);
+        },
         readJsonBody: readBodyJson,
       });
 

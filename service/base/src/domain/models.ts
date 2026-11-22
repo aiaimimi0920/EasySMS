@@ -485,7 +485,12 @@ export type SmsProviderHealthState =
   | "blocked"
   | "degraded";
 
-export type SmsProviderRouteKind = "list-public-numbers" | "read-public-inbox";
+export type SmsProviderRouteKind =
+  | "list-public-numbers"
+  | "read-public-inbox"
+  | "activation-catalog"
+  | "create-activation"
+  | "get-activation-status";
 export type SmsProviderRouteScopeKind = "provider" | "country";
 
 export interface SmsProviderHealthSnapshot {

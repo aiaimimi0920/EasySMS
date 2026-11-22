@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { detectYunDuanXinAccessGateHtml } from "../../../src/providers/yunduanxin/session-helper.js";
+import {
+  detectYunDuanXinAccessGateHtml,
+  fetchYunDuanXinHtml,
+} from "../../../src/providers/yunduanxin/session-helper.js";
 
-describe("YunDuanXin HTTP session helper", () => {
+describe("YunDuanXin Web HTTP session helper", () => {
   it("detects real browser challenge pages", () => {
     expect(detectYunDuanXinAccessGateHtml(
       "<html><head><title>Just a moment...</title></head><body>Enable JavaScript and cookies to continue</body></html>",
@@ -27,5 +30,14 @@ describe("YunDuanXin HTTP session helper", () => {
         </body>
       </html>
     `)).toBe(false);
+  });
+
+  it("fetches HTML via pure Web fetch", async () => {
+    const html = await fetchYunDuanXinHtml(
+      "https://yunduanxin.net/",
+      { scraping: { requestTimeoutMs: 10_000, userAgent: "EasySmsTest/1.0" } } as never,
+      async () => new Response("<html><body>在线接收短信验证码</body></html>", { status: 200 }),
+    );
+    expect(html).toContain("在线接收短信验证码");
   });
 });

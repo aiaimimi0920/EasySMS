@@ -17,6 +17,15 @@ class TestAllContractTests(unittest.TestCase):
         self.assertIn('Invoke-NativeCommand $serviceTsc "--project" "tsconfig.json" "--noEmit"', script)
         self.assertIn('Invoke-NativeCommand $serviceTsc "--project" "tsconfig.json"', script)
 
+    def test_test_all_validates_cloudflare_worker_and_sba_contracts(self) -> None:
+        script = TEST_ALL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("validate-sba.mjs", script)
+        self.assertIn("build-worker.mjs", script)
+        self.assertIn("sba-lifecycle.test.mjs", script)
+        self.assertNotIn("userscript", script.lower())
+        self.assertNotIn("docker", script.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

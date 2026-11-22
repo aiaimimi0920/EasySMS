@@ -15,6 +15,7 @@ import type {
   HeroSmsOperatorQuote,
   ProviderDescriptor,
 } from "../../domain/models.js";
+import { withProviderRequestTimeout } from "../../shared/index.js";
 
 interface HeroSmsApiErrorPayload {
   title?: string;
@@ -72,8 +73,11 @@ export const heroSmsActivationProviderDescriptor: ProviderDescriptor = {
 
 export class HeroSmsActivationProvider {
   readonly descriptor = heroSmsActivationProviderDescriptor;
+  private readonly config: EasySmsRuntimeConfig;
 
-  constructor(private readonly config: EasySmsRuntimeConfig) {}
+  constructor(config: EasySmsRuntimeConfig) {
+    this.config = withProviderRequestTimeout(config, providerKey);
+  }
 
   async getCountries(): Promise<HeroSmsCountry[]> {
     const data = await this.request("getCountries");

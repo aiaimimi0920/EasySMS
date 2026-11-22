@@ -1,25 +1,25 @@
-import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import type { EasySmsRuntimeConfig } from "../../domain/models.js";
-
-const receiveSmsFreeCcPythonHelperPath = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "session_helper.py",
-);
+import { WebHttpSession, md5Hex, type FetchLike } from "../../shared/index.js";
 
 const receiveSmsFreeCcAccessGatePattern =
   /virtual numbers are required to .*register.*or .*login.*before accessing the content/i;
 
-const receiveSmsFreeCcImpersonationProfiles = [
-  "chrome136",
-  "chrome123",
-  "chrome107",
-  "chrome99",
-  "safari17_0",
-] as const;
+const HTML_HEADERS: Record<string, string> = {
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
+  "Cache-Control": "no-cache",
+  Pragma: "no-cache",
+  "Upgrade-Insecure-Requests": "1",
+};
+
+const LOGIN_HEADERS: Record<string, string> = {
+  Accept: "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
+  "Content-Type": "application/json",
+  Origin: "https://receive-sms-free.cc",
+  Referer: "https://receive-sms-free.cc/auth/login",
+  "X-Requested-With": "XMLHttpRequest",
+};
 
 export interface ReceiveSmsFreeCcLoginPayload {
   mail: string;
@@ -37,21 +37,12 @@ export function buildReceiveSmsFreeCcLoginPayload(
 ): ReceiveSmsFreeCcLoginPayload {
   return {
     mail: String(email).trim(),
-    password: createHash("md5").update(String(password), "utf8").digest("hex"),
+    password: md5Hex(String(password)),
   };
 }
 
 export function isReceiveSmsFreeCcAccessGateHtml(html: string): boolean {
   return receiveSmsFreeCcAccessGatePattern.test(String(html ?? ""));
-}
-
-export function getReceiveSmsFreeCcImpersonationProfiles(): string[] {
-  return [...receiveSmsFreeCcImpersonationProfiles];
-}
-
-function isCommandMissingError(error: Error): boolean {
-  const normalized = error.message.toLowerCase();
-  return normalized.includes("not found") || normalized.includes("cannot find");
 }
 
 export function resolveReceiveSmsFreeCcAuthConfig(
@@ -70,85 +61,42 @@ export async function fetchReceiveSmsFreeCcHtml(
   url: string,
   config: EasySmsRuntimeConfig,
   auth: ReceiveSmsFreeCcAuthConfig | undefined,
+  fetchImpl?: FetchLike,
 ): Promise<string> {
-  const loginPayload = auth?.email && auth?.password
-    ? buildReceiveSmsFreeCcLoginPayload(auth.email, auth.password)
-    : undefined;
-  const commandCandidates = process.platform === "win32"
-    ? [
-        { command: "python", prefix: [] as string[] },
-        { command: "python3", prefix: [] as string[] },
-        { command: "py", prefix: ["-3"] },
-      ]
-    : [
-        { command: "python3", prefix: [] as string[] },
-        { command: "python", prefix: [] as string[] },
-      ];
+  const timeoutMs = Math.max(5_000, config.scraping.requestTimeoutMs);
+  const userAgent = config.scraping.userAgent;
+  const session = new WebHttpSession(fetchImpl);
 
-  const buildArgs = (profile: string): string[] => [
-    receiveSmsFreeCcPythonHelperPath,
-    "--url",
-    url,
-    "--timeout-seconds",
-    String(Math.max(5, Math.ceil(config.scraping.requestTimeoutMs / 1000))),
-    "--impersonate-profile",
-    profile,
-    ...(loginPayload
-      ? [
-          "--login-email",
-          loginPayload.mail,
-          "--login-password-md5",
-          loginPayload.password,
-        ]
-      : []),
-  ];
-
-  const runHelper = async (command: string, prefix: string[], profile: string): Promise<string> => {
-    const stdout = await new Promise<string>((resolveOutput, reject) => {
-      execFile(
-        command,
-        [...prefix, ...buildArgs(profile)],
-        {
-          maxBuffer: 16 * 1024 * 1024,
-          timeout: config.scraping.requestTimeoutMs,
-          windowsHide: true,
-        },
-        (error, commandStdout, commandStderr) => {
-          if (error) {
-            const detail = commandStderr?.trim() || commandStdout?.trim() || error.message;
-            reject(new Error(detail));
-            return;
-          }
-          resolveOutput(commandStdout);
-        },
-      );
+  if (auth?.email && auth?.password) {
+    const loginPayload = buildReceiveSmsFreeCcLoginPayload(auth.email, auth.password);
+    const bootstrap = await session.request("https://receive-sms-free.cc/auth/login", {
+      method: "GET",
+      timeoutMs,
+      headers: { ...HTML_HEADERS, "User-Agent": userAgent },
     });
-
-    if (!stdout.trim()) {
-      throw new Error(`receive_sms_free_cc helper returned an empty response for ${url}.`);
+    if (!bootstrap.ok) {
+      throw new Error(`HTTP Error ${bootstrap.status}: ${bootstrap.statusText || "Login bootstrap failed"}`);
     }
 
-    return stdout;
-  };
-
-  let lastError: Error | undefined;
-  for (const candidate of commandCandidates) {
-    let commandMissing = false;
-    for (const profile of getReceiveSmsFreeCcImpersonationProfiles()) {
-      try {
-        return await runHelper(candidate.command, candidate.prefix, profile);
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error));
-        if (isCommandMissingError(lastError)) {
-          commandMissing = true;
-          break;
-        }
-      }
+    const loginResponse = await session.request("https://receive-sms-free.cc/ajax/login", {
+      method: "POST",
+      timeoutMs,
+      headers: { ...LOGIN_HEADERS, "User-Agent": userAgent },
+      body: JSON.stringify(loginPayload),
+    });
+    if (!loginResponse.ok) {
+      throw new Error(`HTTP Error ${loginResponse.status}: ${loginResponse.statusText || "Login failed"}`);
     }
-    if (!commandMissing) {
-      throw lastError;
+    const payload = await loginResponse.json() as { status?: boolean; Msg?: string; result?: string };
+    if (payload.status !== true) {
+      throw new Error(
+        `receive_sms_free_cc login failed: ${payload.Msg || payload.result || "unknown error"}`,
+      );
     }
   }
 
-  throw lastError ?? new Error("Python runtime is unavailable for receive_sms_free_cc.");
+  return session.getText(url, {
+    timeoutMs,
+    headers: { ...HTML_HEADERS, "User-Agent": userAgent },
+  });
 }

@@ -1,19 +1,13 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   buildReceiveSmsFreeCcLoginPayload,
-  getReceiveSmsFreeCcImpersonationProfiles,
+  fetchReceiveSmsFreeCcHtml,
   isReceiveSmsFreeCcAccessGateHtml,
 } from "../../../src/providers/receive_sms_free_cc/session-helper.js";
 
-describe("Receive-SMS-Free.cc HTTP session helper", () => {
-  afterEach(() => {
-    vi.doUnmock("node:child_process");
-    vi.resetModules();
-    vi.restoreAllMocks();
-  });
-
-  it("builds the ajax login payload with the md5-hashed password expected by the site", () => {
+describe("Receive-SMS-Free.cc Web HTTP session helper", () => {
+  it("builds the ajax login payload with the pure-TS md5-hashed password expected by the site", () => {
     expect(buildReceiveSmsFreeCcLoginPayload("user@example.test", "example-password")).toEqual({
       mail: "user@example.test",
       password: "cc4436eff149ba9761aaac07b36360ea",
@@ -30,45 +24,49 @@ describe("Receive-SMS-Free.cc HTTP session helper", () => {
     )).toBe(false);
   });
 
-  it("prefers impersonation profiles that avoid curl_cffi TLS regressions", () => {
-    expect(getReceiveSmsFreeCcImpersonationProfiles()).toEqual([
-      "chrome136",
-      "chrome123",
-      "chrome107",
-      "chrome99",
-      "safari17_0",
-    ]);
-  });
+  it("performs cookie-jar login bootstrap before fetching protected directory pages", async () => {
+    const requests: Array<{ url: string; method: string; cookie: string | null }> = [];
+    const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const headers = new Headers(init?.headers);
+      requests.push({
+        url,
+        method: init?.method ?? "GET",
+        cookie: headers.get("cookie"),
+      });
 
-  it("tries the next impersonation profile when the helper reports a TLS error", async () => {
-    const calls: string[][] = [];
-    vi.doMock("node:child_process", () => ({
-      execFile: vi.fn((
-        _command: string,
-        args: string[],
-        _options: unknown,
-        callback: (error: Error | null, stdout: string, stderr: string) => void,
-      ) => {
-        calls.push(args);
-        if (calls.length === 1) {
-          callback(new Error("helper failed"), "", "curl: (35) TLS connect error");
-          return;
-        }
-        callback(null, "<html><body>receive-sms-free directory</body></html>", "");
-      }),
-    }));
-
-    const { fetchReceiveSmsFreeCcHtml } = await import("../../../src/providers/receive_sms_free_cc/session-helper.js");
+      if (url === "https://receive-sms-free.cc/auth/login") {
+        return new Response("<html>login</html>", {
+          status: 200,
+          headers: { "set-cookie": "PHPSESSID=boot-123; Path=/" },
+        });
+      }
+      if (url === "https://receive-sms-free.cc/ajax/login") {
+        return new Response(JSON.stringify({ status: true }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "set-cookie": "member_token=auth-456; Path=/",
+          },
+        });
+      }
+      return new Response("<html><body>receive-sms-free directory</body></html>", { status: 200 });
+    };
 
     const html = await fetchReceiveSmsFreeCcHtml(
       "https://receive-sms-free.cc/regions/",
-      { scraping: { requestTimeoutMs: 30_000 } } as never,
-      undefined,
+      { scraping: { requestTimeoutMs: 15_000, userAgent: "Mozilla/5.0" } } as never,
+      { email: "user@example.test", password: "example-password" },
+      fetchImpl,
     );
 
     expect(html).toContain("receive-sms-free directory");
-    expect(calls).toHaveLength(2);
-    expect(calls[0]).toEqual(expect.arrayContaining(["--impersonate-profile", "chrome136"]));
-    expect(calls[1]).toEqual(expect.arrayContaining(["--impersonate-profile", "chrome123"]));
+    expect(requests.map((item) => item.url)).toEqual([
+      "https://receive-sms-free.cc/auth/login",
+      "https://receive-sms-free.cc/ajax/login",
+      "https://receive-sms-free.cc/regions/",
+    ]);
+    expect(requests[2]?.cookie).toContain("PHPSESSID=boot-123");
+    expect(requests[2]?.cookie).toContain("member_token=auth-456");
   });
 });

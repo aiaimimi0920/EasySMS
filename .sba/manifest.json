@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 3,
+  "id": "easysms",
+  "name": "EasySms",
+  "version": "1.0.0",
+  "entrypoint": "springbok.ps1",
+  "runtime": {
+    "runner": "ubuntu-24.04",
+    "powershell": "7.6.9",
+    "python": "3.12",
+    "node": "22"
+  },
+  "actions": {
+    "deploy": { "timeoutSeconds": 900 },
+    "update": { "timeoutSeconds": 900 },
+    "verify": { "timeoutSeconds": 180 },
+    "preview": { "timeoutSeconds": 900 },
+    "destroy-preview": { "timeoutSeconds": 600 }
+  },
+  "secrets": [
+    "EASYSMS_CLOUDFLARE_API_TOKEN",
+    "EASYSMS_API_KEY",
+    "EASYSMS_BACKUP_PASSPHRASE",
+    "EASYSMS_HEROSMS_API_KEY",
+    "EASYSMS_ONLINESIM_API_KEY",
+    "EASYSMS_SMSTOME_EMAIL",
+    "EASYSMS_SMSTOME_PASSWORD",
+    "EASYSMS_RECEIVESMSS_USERNAME",
+    "EASYSMS_RECEIVESMSS_PASSWORD",
+    "EASYSMS_RECEIVESMSFREECC_EMAIL",
+    "EASYSMS_RECEIVESMSFREECC_PASSWORD"
+  ]
+}

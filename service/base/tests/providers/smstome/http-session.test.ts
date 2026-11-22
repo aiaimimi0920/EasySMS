@@ -1,27 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  extractSmsToMeLoginChallenge,
-  getSmsToMeImpersonationProfiles,
+  detectSmsToMeCaptchaChallenge,
+  fetchSmsToMeHtml,
   isSmsToMeAccessGateHtml,
 } from "../../../src/providers/smstome/session-helper.js";
 
-describe("SMSToMe HTTP session helper", () => {
-  it("extracts the login csrf fields and solves the inline math captcha", () => {
-    expect(extractSmsToMeLoginChallenge(`
-      <form method="POST" action="/sign-in">
-        <input type="hidden" name="_token" value="token-123">
-        <input type="hidden" name="csrf_v" value="MiArIDY=">
-        <label for="captchaInput">What is 2 + 6?</label>
-      </form>
-    `)).toEqual({
-      csrfToken: "token-123",
-      csrfV: "MiArIDY=",
-      captchaPrompt: "What is 2 + 6?",
-      captchaAnswer: "8",
-    });
-  });
-
+describe("SMSToMe Web HTTP session helper", () => {
   it("detects the locked html gate used when number content is hidden", () => {
     expect(isSmsToMeAccessGateHtml(
       '<p class="mp-locked__msg">Please log in to view messages for this number.</p>',
@@ -32,12 +17,32 @@ describe("SMSToMe HTTP session helper", () => {
     )).toBe(false);
   });
 
-  it("prefers the proven impersonation fallback profiles before newer blocked ones", () => {
-    expect(getSmsToMeImpersonationProfiles()).toEqual([
-      "chrome101",
-      "edge101",
-      "chrome99",
-      "chrome136",
-    ]);
+  it("detects captcha challenges on sign-in pages and fails closed without attempting to solve them", async () => {
+    const captchaSignInHtml = `
+      <form method="POST" action="/sign-in">
+        <input type="hidden" name="_token" value="token-123">
+        <label for="captchaInput">What is 2 + 6?</label>
+      </form>
+    `;
+    expect(detectSmsToMeCaptchaChallenge(captchaSignInHtml)).toBe(true);
+
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://smstome.com/sign-in") {
+        return new Response(captchaSignInHtml, { status: 200 });
+      }
+      return new Response('<p class="mp-locked__msg">Please log in to view messages for this number.</p>', {
+        status: 200,
+      });
+    };
+
+    await expect(
+      fetchSmsToMeHtml(
+        "https://smstome.com/united-kingdom/phone/447575396027/sms/16039",
+        { scraping: { requestTimeoutMs: 10_000, userAgent: "Mozilla/5.0" } } as never,
+        { email: "user@example.test", password: "test-password" },
+        fetchImpl,
+      ),
+    ).rejects.toThrow("captcha");
   });
 });

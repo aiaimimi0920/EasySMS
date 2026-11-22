@@ -1,17 +1,12 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   detectSms24AccessGateHtml,
-  getSms24ImpersonationProfiles,
+  fetchSms24Html,
+  getSms24UserAgents,
 } from "../../../src/providers/sms24/session-helper.js";
 
-describe("SMS24 HTTP helper", () => {
-  afterEach(() => {
-    vi.doUnmock("node:child_process");
-    vi.resetModules();
-    vi.restoreAllMocks();
-  });
-
+describe("SMS24 Web HTTP helper", () => {
   it("detects challenge HTML", () => {
     expect(detectSms24AccessGateHtml(
       "<html><head><title>Just a moment...</title></head><body>Enable JavaScript and cookies to continue</body></html>",
@@ -22,43 +17,29 @@ describe("SMS24 HTTP helper", () => {
     )).toBe(false);
   });
 
-  it("prefers impersonation profiles that are stable in the service container", () => {
-    expect(getSms24ImpersonationProfiles()).toEqual([
-      "chrome120",
-      "chrome136",
-      "chrome104",
-      "safari17_0",
-      "chrome146",
-    ]);
+  it("exposes fallback browser user agents for pure Web fetch", () => {
+    expect(getSms24UserAgents().length).toBeGreaterThanOrEqual(2);
   });
 
-  it("tries the next impersonation profile when the helper reports a TLS error", async () => {
-    const calls: string[][] = [];
-    vi.doMock("node:child_process", () => ({
-      execFile: vi.fn((
-        _command: string,
-        args: string[],
-        _options: unknown,
-        callback: (error: Error | null, stdout: string, stderr: string) => void,
-      ) => {
-        calls.push(args);
-        if (calls.length === 1) {
-          callback(new Error("helper failed"), "", "curl: (35) TLS connect error");
-          return;
-        }
-        callback(null, "<html><body>sms24 directory</body></html>", "");
-      }),
-    }));
+  it("falls back to the next user-agent profile when the first fetch fails", async () => {
+    const seenUserAgents: string[] = [];
+    const fetchImpl = async (_input: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      seenUserAgents.push(headers.get("user-agent") ?? "");
+      if (seenUserAgents.length === 1) {
+        return new Response("Upstream error", { status: 502 });
+      }
+      return new Response("<html><body>sms24 directory</body></html>", { status: 200 });
+    };
 
-    const { fetchSms24Html } = await import("../../../src/providers/sms24/session-helper.js");
-
-    const html = await fetchSms24Html("https://sms24.me/en/numbers", {
-      scraping: { requestTimeoutMs: 20_000 },
-    } as never);
+    const html = await fetchSms24Html(
+      "https://sms24.me/en/numbers",
+      { scraping: { requestTimeoutMs: 10_000 } } as never,
+      fetchImpl,
+    );
 
     expect(html).toContain("sms24 directory");
-    expect(calls).toHaveLength(2);
-    expect(calls[0]).toEqual(expect.arrayContaining(["--impersonate-profile", "chrome120"]));
-    expect(calls[1]).toEqual(expect.arrayContaining(["--impersonate-profile", "chrome136"]));
+    expect(seenUserAgents).toHaveLength(2);
+    expect(seenUserAgents[0]).not.toBe(seenUserAgents[1]);
   });
 });

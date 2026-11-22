@@ -11,16 +11,4 @@ service/base/dist/
 service/base/coverage/
 service/base/*.log
 service/base/easy-sms-state.json
-
-runtimes/userscript/easy_sms_proxy.local.user.js
-runtimes/userscript/easy_sms_proxy.secrets.local.json
-
-deploy/service/base/config/config.yaml
-deploy/service/base/config/runtime.env
-deploy/service/base/bootstrap/
-deploy/service/base/instances/
-deploy/service/base/data/*
-!deploy/service/base/data/.gitkeep
-!deploy/service/base/data/state/
-deploy/service/base/data/state/*
-!deploy/service/base/data/state/.gitkeep
+service/base/state/

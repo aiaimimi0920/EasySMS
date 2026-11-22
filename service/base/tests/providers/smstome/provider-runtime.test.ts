@@ -35,10 +35,13 @@ const deadInboxHtml = `
   </table>
 `;
 
+const requestedUrls: string[] = [];
+
 vi.mock("../../../src/providers/smstome/session-helper.js", () => ({
   isSmsToMeAccessGateHtml: () => false,
   resolveSmsToMeAuthConfig: () => ({ email: "vmjcv666@gmail.com", password: "Qq365210!@#$%^" }),
   fetchSmsToMeHtml: async (url: string) => {
+    requestedUrls.push(url);
     if (url === "https://smstome.com") {
       return homepageHtml;
     }
@@ -57,6 +60,7 @@ vi.mock("../../../src/providers/smstome/session-helper.js", () => ({
 
 describe("SMSToMe provider runtime wiring", () => {
   beforeEach(() => {
+    requestedUrls.length = 0;
     vi.resetModules();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-13T06:30:00.000Z"));
@@ -114,5 +118,30 @@ describe("SMSToMe provider runtime wiring", () => {
     expect(inbox.messages[0]?.sender).toBe("447934556XXX");
     expect(inbox.messages[0]?.receivedAtText).toBe("3 minutes ago");
     expect(inbox.messages[1]?.content).toContain("469021");
+  });
+
+  it("stops scanning subsequent country pages once limit live numbers are found", async () => {
+    const { SmsToMeProvider } = await import("../../../src/providers/smstome/index.js");
+
+    const provider = new SmsToMeProvider({
+      scraping: {
+        requestTimeoutMs: 15_000,
+        maxNumbersPerProvider: 20,
+        userAgent: "Mozilla/5.0",
+      },
+      providers: {
+        smsToMe: {
+          email: "test@example.com",
+          password: "test-password",
+        },
+      },
+    } as never);
+
+    const items = await provider.listPublicNumbers({ limit: 1 });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.phoneNumber).toBe("+447575396027");
+    expect(requestedUrls).toContain("https://smstome.com/country/united-kingdom");
+    expect(requestedUrls).not.toContain("https://smstome.com/country/finland");
   });
 });

@@ -1,34 +1,32 @@
 {
-    "schemaVersion":  1,
-    "project":  "EasySms",
-    "releaseClass":  "standard-service-base",
-    "workflows":  [
-                      {
-                          "component":  "service-base",
-                          "requiresImportCode":  true,
-                          "releaseTagOutputs":  [
-                                                    "release_tag",
-                                                    "version"
-                                                ],
-                          "artifacts":  [
-                                            "service-base-r2-config-manifest",
-                                            "service-base-import-code-encrypted"
-                                        ],
-                          "releaseTagInputs":  [
-                                                   "release_tag",
-                                                   "version"
-                                               ],
-                          "requiresR2":  true,
-                          "path":  ".github/workflows/publish-service-base-ghcr.yml",
-                          "requiresGhcr":  true
-                      }
-                  ],
-    "localDeploy":  {
-                        "entrypoint":  "deploy-host.ps1",
-                        "zeroFolder":  true,
-                        "forbidDevSourceBindMounts":  true
-                    },
-    "exceptions":  [
-                       "Provider-specific smoke tests remain project-specific."
-                   ]
+  "schemaVersion": 1,
+  "project": "EasySms",
+  "releaseClass": "springbok-cloudflare-workers",
+  "sba": {
+    "manifestPath": ".sba/manifest.json",
+    "manifestSchemaVersion": 3,
+    "deploymentPath": ".sba/deployment.json",
+    "deploymentSchemaVersion": 2,
+    "target": "cloudflare-workers",
+    "entrypoint": ".sba/springbok.ps1",
+    "requiredActions": [
+      "deploy",
+      "update",
+      "verify",
+      "preview",
+      "destroy-preview"
+    ],
+    "requiredResources": [
+      "database",
+      "backups"
+    ]
+  },
+  "worker": {
+    "sourceEntrypoint": "service/base/src/worker/index.ts",
+    "buildScript": "service/base/scripts/build-worker.mjs",
+    "migrationSql": "service/base/migrations/0001_initial.sql"
+  },
+  "ci": {
+    "validateWorkflow": ".github/workflows/validate.yml"
+  }
 }

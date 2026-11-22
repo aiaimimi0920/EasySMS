@@ -1,7 +1,4 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { execFile, execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { promisify } from "node:util";
 
 import { load, type CheerioAPI } from "cheerio";
 
@@ -12,6 +9,11 @@ import type {
   SmsProviderKey,
   SmsPublicNumber,
 } from "../domain/models.js";
+import { WebHttpSession, type FetchLike } from "./cookie-fetch.js";
+import { md5Hex } from "./md5.js";
+
+export { WebCookieJar, WebHttpSession, type CookieFetchOptions, type FetchLike } from "./cookie-fetch.js";
+export { md5Hex };
 
 const MIN_PROVIDER_REQUEST_TIMEOUT_MS = 5000;
 
@@ -153,7 +155,6 @@ const countryDialCodeByName: Record<string, string> = {
   "菲律宾": "+63",
 };
 
-const execFileAsync = promisify(execFile);
 const knownDialCodes = Array.from(new Set(Object.values(countryDialCodeByName))).sort(
   (left, right) => right.length - left.length,
 );
@@ -162,22 +163,30 @@ export async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   const maxBodySizeBytes = 1024 * 1024;
   const chunks: Uint8Array[] = [];
   let totalBytes = 0;
+  const encoder = new TextEncoder();
 
   for await (const chunk of request) {
-    const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-    totalBytes += buffer.length;
+    const bytes = typeof chunk === "string" ? encoder.encode(chunk) : new Uint8Array(chunk);
+    totalBytes += bytes.byteLength;
     if (totalBytes > maxBodySizeBytes) {
       throw new ValidationError("Request body exceeds maximum allowed size (1 MB).");
     }
-    chunks.push(buffer);
+    chunks.push(bytes);
   }
 
   if (chunks.length === 0) {
     return {};
   }
 
+  const combined = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return JSON.parse(new TextDecoder("utf-8").decode(combined));
   } catch {
     throw new ValidationError("Request body must be valid JSON.");
   }
@@ -189,9 +198,10 @@ export function writeJson(
   payload: unknown,
 ): void {
   const body = JSON.stringify(payload, null, 2);
+  const byteLength = new TextEncoder().encode(body).byteLength;
   response.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
-    "Content-Length": Buffer.byteLength(body).toString(),
+    "Content-Length": byteLength.toString(),
   });
   response.end(body);
 }
@@ -202,9 +212,9 @@ export function normalizeText(value: string | null | undefined): string {
 
 export function redactSensitiveText(value: string | null | undefined): string {
   return String(value ?? "")
-    .replace(/\b(Bearer\s+)[A-Za-z0-9._-]+/gi, "$1<redacted>")
+    .replace(/\b(Bearer\s+)(?!<redacted>)[A-Za-z0-9._-]+/gi, "$1<redacted>")
     .replace(
-      /\b((?:api[_-]?key|apikey|access[_-]?token|token|password|secret|key)=)([^&\s]+)/gi,
+      /\b((?:api[_-]?key|apikey|access[_-]?token|token|password|secret|key)=)(?!<redacted>)([^&\s"']+)/gi,
       "$1<redacted>",
     );
 }
@@ -214,12 +224,27 @@ export function resolveAbsoluteUrl(baseUrl: string, href: string): string {
 }
 
 export function encodeNumberId(reference: SmsNumberReference): string {
-  return Buffer.from(JSON.stringify(reference), "utf8").toString("base64url");
+  const bytes = new TextEncoder().encode(JSON.stringify(reference));
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 export function decodeNumberId(numberId: string): SmsNumberReference {
   try {
-    const payload = Buffer.from(numberId, "base64url").toString("utf8");
+    const normalized = String(numberId ?? "").replace(/-/g, "+").replace(/_/g, "/");
+    if (!normalized || /[^A-Za-z0-9+/=]/.test(normalized)) {
+      throw new Error("Invalid base64url");
+    }
+    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    const payload = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return JSON.parse(payload) as SmsNumberReference;
   } catch {
     throw new ValidationError("Invalid numberId.");
@@ -336,79 +361,26 @@ export async function fetchJsonValue<T>(
   config: EasySmsRuntimeConfig,
   referer?: string,
 ): Promise<T> {
+  let rawText: string;
   try {
-    return JSON.parse(
-      await fetchTextResponse(url, config, "application/json,text/plain;q=0.9,*/*;q=0.8", referer),
-    ) as T;
+    rawText = await fetchTextResponse(url, config, "application/json,text/plain;q=0.9,*/*;q=0.8", referer);
   } catch (error) {
     throw new Error(
-      `Failed to parse JSON from ${url}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      `Failed to fetch JSON from ${redactSensitiveText(url)}: ${redactSensitiveText(
+        error instanceof Error ? error.message : "Unknown error",
+      )}`,
     );
   }
-}
 
-export async function fetchBrowserRenderedHtml(
-  url: string,
-  config: EasySmsRuntimeConfig,
-  virtualTimeBudgetMs = Math.max(8000, config.scraping.requestTimeoutMs - 2000),
-): Promise<string> {
-  return fetchBrowserRenderedHtmlInternal(url, config, virtualTimeBudgetMs, config.scraping.userAgent);
-}
-
-export async function fetchBrowserRenderedHtmlWithNativeUserAgent(
-  url: string,
-  config: EasySmsRuntimeConfig,
-  virtualTimeBudgetMs = Math.max(8000, config.scraping.requestTimeoutMs - 2000),
-): Promise<string> {
-  return fetchBrowserRenderedHtmlInternal(url, config, virtualTimeBudgetMs);
-}
-
-export async function fetchBrowserRenderedDocumentWithNativeUserAgent(
-  url: string,
-  config: EasySmsRuntimeConfig,
-  virtualTimeBudgetMs?: number,
-): Promise<CheerioAPI> {
-  return load(await fetchBrowserRenderedHtmlWithNativeUserAgent(url, config, virtualTimeBudgetMs));
-}
-
-async function fetchBrowserRenderedHtmlInternal(
-  url: string,
-  config: EasySmsRuntimeConfig,
-  virtualTimeBudgetMs: number,
-  userAgent?: string,
-): Promise<string> {
-  const candidates = resolveBrowserExecutableCandidates();
-  let lastError: unknown;
-
-  for (const command of candidates) {
-    try {
-      const { stdout } = await execFileAsync(command, buildBrowserDumpDomArgs(url, virtualTimeBudgetMs, userAgent), {
-        maxBuffer: 16 * 1024 * 1024,
-        timeout: config.scraping.requestTimeoutMs,
-      });
-      if (stdout.trim()) {
-        return stdout;
-      }
-    } catch (error) {
-      lastError = error;
-    }
+  try {
+    return JSON.parse(rawText) as T;
+  } catch (error) {
+    throw new Error(
+      `Failed to parse JSON from ${redactSensitiveText(url)}: ${redactSensitiveText(
+        error instanceof Error ? error.message : "Unknown error",
+      )}`,
+    );
   }
-
-  if (candidates.length === 0) {
-    throw new Error("No supported browser executable was found for DOM rendering fallback.");
-  }
-
-  throw lastError instanceof Error
-    ? lastError
-    : new Error(`Failed to render ${url} with a local browser.`);
-}
-
-export async function fetchBrowserRenderedDocument(
-  url: string,
-  config: EasySmsRuntimeConfig,
-  virtualTimeBudgetMs?: number,
-): Promise<CheerioAPI> {
-  return load(await fetchBrowserRenderedHtml(url, config, virtualTimeBudgetMs));
 }
 
 async function fetchTextResponse(
@@ -416,148 +388,24 @@ async function fetchTextResponse(
   config: EasySmsRuntimeConfig,
   acceptHeader: string,
   referer?: string,
+  fetchImpl?: FetchLike,
 ): Promise<string> {
+  const session = new WebHttpSession(fetchImpl);
   try {
-    const response = await fetch(url, {
+    return await session.getText(url, {
+      timeoutMs: config.scraping.requestTimeoutMs,
       headers: {
-        accept: acceptHeader,
-        "accept-language": "en-US,en;q=0.9,zh-CN;q=0.8",
-        "cache-control": "no-cache",
-        pragma: "no-cache",
-        "user-agent": config.scraping.userAgent,
-        ...(referer ? { referer } : {}),
+        Accept: acceptHeader,
+        "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache",
+        "User-Agent": config.scraping.userAgent,
+        ...(referer ? { Referer: referer } : {}),
       },
-      signal: AbortSignal.timeout(config.scraping.requestTimeoutMs),
     });
-
-    if (response.ok) {
-      return await response.text();
-    }
-  } catch {
-    // fetch failed; fall through to curl
-  }
-
-  return fetchTextViaCurl(url, config, acceptHeader, referer);
-}
-
-async function fetchTextViaCurl(
-  url: string,
-  config: EasySmsRuntimeConfig,
-  acceptHeader: string,
-  referer?: string,
-): Promise<string> {
-  const candidates = process.platform === "win32" ? ["curl.exe", "curl"] : ["curl"];
-  const baseArgs = [
-    "-A",
-    config.scraping.userAgent,
-    "-L",
-    "--max-redirs",
-    "5",
-    "--connect-timeout",
-    String(Math.max(5, Math.ceil(config.scraping.requestTimeoutMs / 1000))),
-    "-H",
-    `Accept: ${acceptHeader}`,
-    "-H",
-    "Accept-Language: en-US,en;q=0.9,zh-CN;q=0.8",
-    "-H",
-    "Cache-Control: no-cache",
-    "-H",
-    "Pragma: no-cache",
-  ];
-
-  if (referer) {
-    baseArgs.push("-e", referer);
-  }
-
-  baseArgs.push(url);
-
-  let lastError: unknown;
-  for (const command of candidates) {
-    try {
-      const { stdout } = await execFileAsync(command, baseArgs, {
-        maxBuffer: 16 * 1024 * 1024,
-        timeout: config.scraping.requestTimeoutMs,
-      });
-      return stdout;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error("Failed to fetch response with curl.");
-}
-
-function buildBrowserDumpDomArgs(
-  url: string,
-  virtualTimeBudgetMs: number,
-  userAgent?: string,
-): string[] {
-  const sandboxArgs = process.platform === "linux"
-    ? ["--no-sandbox", "--disable-dev-shm-usage"]
-    : [];
-
-  return [
-    "--headless",
-    "--disable-gpu",
-    "--disable-background-networking",
-    "--no-default-browser-check",
-    "--no-first-run",
-    ...sandboxArgs,
-    ...(userAgent ? [`--user-agent=${userAgent}`] : []),
-    "--window-size=1366,768",
-    `--virtual-time-budget=${virtualTimeBudgetMs}`,
-    "--dump-dom",
-    url,
-  ];
-}
-
-function resolveBrowserExecutableCandidates(): string[] {
-  const rawCandidates =
-    process.platform === "win32"
-      ? [
-          "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-          "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-          "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-          "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-          "msedge.exe",
-          "chrome.exe",
-        ]
-      : process.platform === "darwin"
-        ? [
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "microsoft-edge",
-            "google-chrome",
-            "chromium",
-            "chromium-browser",
-          ]
-        : ["microsoft-edge", "google-chrome", "chromium", "chromium-browser"];
-
-  return rawCandidates.filter((candidate, index, items) => {
-    if (items.indexOf(candidate) !== index) {
-      return false;
-    }
-
-    return isExecutableCandidateAvailable(candidate);
-  });
-}
-
-function isExecutableCandidateAvailable(candidate: string): boolean {
-  if (candidate.includes("\\") || candidate.startsWith("/")) {
-    return existsSync(candidate);
-  }
-
-  try {
-    if (process.platform === "win32") {
-      execFileSync("where.exe", [candidate], { stdio: "ignore" });
-      return true;
-    }
-
-    execFileSync("/bin/sh", ["-lc", `command -v ${candidate} >/dev/null 2>&1`], {
-      stdio: "ignore",
-    });
-    return true;
-  } catch {
-    return false;
+  } catch (error) {
+    throw error instanceof Error
+      ? new Error(redactSensitiveText(error.message))
+      : new Error("Failed to fetch upstream HTTP response.");
   }
 }

@@ -17,7 +17,9 @@ export function startEasySmsStatePersistenceLoop(
   config: EasySmsRuntimeConfig,
   options: EasySmsStatePersistenceLoopOptions,
 ): EasySmsStatePersistenceLoop {
-  const flushOnce = async (detail?: string): Promise<void> => {
+  let flushQueue: Promise<void> = Promise.resolve();
+
+  const performFlush = async (detail?: string): Promise<void> => {
     const startedAt = new Date();
     try {
       await saveEasySmsRuntimeState(config, service.getRuntimeStateSnapshot());
@@ -35,8 +37,14 @@ export function startEasySmsStatePersistenceLoop(
     }
   };
 
+  const enqueueFlush = (detail?: string): Promise<void> => {
+    const next = flushQueue.catch(() => undefined).then(() => performFlush(detail));
+    flushQueue = next;
+    return next;
+  };
+
   const intervalHandle = setInterval(() => {
-    void flushOnce().catch((error) =>
+    void enqueueFlush().catch((error) =>
       console.error("[EasySMS] persistence: periodic flush failed:", error),
     );
   }, options.intervalMs);
@@ -44,11 +52,11 @@ export function startEasySmsStatePersistenceLoop(
   return {
     intervalMs: options.intervalMs,
     flush() {
-      return flushOnce("Manual runtime state flush completed.");
+      return enqueueFlush("Manual runtime state flush completed.");
     },
     async stop() {
       clearInterval(intervalHandle);
-      await flushOnce("Shutdown runtime state flush completed.");
+      await enqueueFlush("Shutdown runtime state flush completed.");
     },
   };
 }

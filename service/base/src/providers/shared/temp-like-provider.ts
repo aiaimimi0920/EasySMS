@@ -10,7 +10,6 @@ import {
   decodeNumberId,
   dedupeAndLimit,
   encodeNumberId,
-  fetchBrowserRenderedDocumentWithNativeUserAgent,
   fetchHtmlDocument,
   inferCountryCode,
   matchesCountryFilter,
@@ -19,35 +18,29 @@ import {
 } from "../../shared/index.js";
 import type { SmsProvider } from "../contracts.js";
 
-export type TempLikeFetchMode = "browser-native-ua" | "html";
-
 export interface TempLikeProviderDefinition {
   descriptor: ProviderDescriptor;
-  fetchMode?: TempLikeFetchMode;
   listUrl: string;
   linkMatcher: RegExp;
   documentFetcher?: TempLikeDocumentFetcher;
 }
 
 interface TempLikeDocumentFetcherDeps {
-  browserNativeUaFetcher: typeof fetchBrowserRenderedDocumentWithNativeUserAgent;
   htmlFetcher: typeof fetchHtmlDocument;
 }
 
-type TempLikeDocumentFetcher = (
+export type TempLikeDocumentFetcher = (
   url: string,
   config: EasySmsRuntimeConfig,
   referer?: string,
 ) => Promise<Awaited<ReturnType<typeof fetchHtmlDocument>>>;
 
 const tempLikeDocumentFetcherDeps: TempLikeDocumentFetcherDeps = {
-  browserNativeUaFetcher: fetchBrowserRenderedDocumentWithNativeUserAgent,
   htmlFetcher: fetchHtmlDocument,
 };
 
 export class TempLikeProvider implements SmsProvider {
   readonly descriptor: ProviderDescriptor;
-  readonly fetchMode: TempLikeFetchMode;
   readonly listUrl: string;
   readonly linkMatcher: RegExp;
   readonly documentFetcher: TempLikeDocumentFetcher;
@@ -57,11 +50,10 @@ export class TempLikeProvider implements SmsProvider {
     definition: TempLikeProviderDefinition,
   ) {
     this.descriptor = definition.descriptor;
-    this.fetchMode = definition.fetchMode ?? "html";
     this.listUrl = definition.listUrl;
     this.linkMatcher = definition.linkMatcher;
     this.documentFetcher = definition.documentFetcher
-      ?? resolveTempLikeDocumentFetcher(this.fetchMode, tempLikeDocumentFetcherDeps);
+      ?? resolveTempLikeDocumentFetcher(tempLikeDocumentFetcherDeps);
   }
 
   async listPublicNumbers(options: ListPublicNumbersOptions): Promise<SmsPublicNumber[]> {
@@ -81,7 +73,14 @@ export class TempLikeProvider implements SmsProvider {
         return;
       }
 
-      const countryName = normalizeText(text.replace(phoneNumber, "").replace(/Latest:.+$/i, "").replace(/Online.+$/i, ""));
+      const countryName = normalizeText(
+        text
+          .replace(phoneNumber, "")
+          .replace(/Latest:.+$/i, "")
+          .replace(/Online.+$/i, "")
+          .replace(/^Free\s+/i, "")
+          .replace(/\s*Phone\s+Numbers?.*$/i, ""),
+      );
       const countryCode = inferCountryCode(countryName, phoneNumber);
       if (!matchesCountryFilter(countryCode, countryName, options.countryCode, options.countryName)) {
         return;
@@ -135,13 +134,8 @@ export class TempLikeProvider implements SmsProvider {
 }
 
 export function resolveTempLikeDocumentFetcher(
-  fetchMode: TempLikeFetchMode | undefined,
   deps: TempLikeDocumentFetcherDeps,
 ): TempLikeDocumentFetcher {
-  if (fetchMode === "browser-native-ua") {
-    return async (url, config) => deps.browserNativeUaFetcher(url, config);
-  }
-
   return (url, config, referer) => deps.htmlFetcher(url, config, referer);
 }
 

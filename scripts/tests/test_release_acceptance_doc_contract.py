@@ -11,14 +11,14 @@ ACCEPTANCE_DOC_PATH = REPO_ROOT / "docs" / "release-acceptance-standard.md"
 
 
 class ReleaseAcceptanceDocContractTests(unittest.TestCase):
-    def test_acceptance_doc_exists_and_records_blank_host_requirements(self) -> None:
+    def test_acceptance_doc_exists_and_records_springbok_cloudflare_requirements(self) -> None:
         doc = ACCEPTANCE_DOC_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("blank-host", doc.lower())
-        self.assertIn("deploy-host.ps1", doc)
-        self.assertIn("run-blank-host-release-smoke.ps1", doc)
-        self.assertIn("Publish Service Base GHCR", doc)
-        self.assertIn("service-base-import-code-encrypted", doc)
+        self.assertIn("springbok", doc.lower())
+        self.assertIn("cloudflare-workers", doc)
+        self.assertIn(".sba/manifest.json", doc)
+        self.assertIn(".sba/deployment.json", doc)
+        self.assertIn("/.well-known/easysms-release.json", doc)
         self.assertIn("/providers/health", doc)
         self.assertIn("/sms/catalog", doc)
 

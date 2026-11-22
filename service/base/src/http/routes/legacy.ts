@@ -16,18 +16,9 @@ import {
   parseTemporaryDisableInput,
 } from "../contracts.js";
 import type { EasySmsHttpHandler } from "../handler.js";
-import type { ServerResponse } from "node:http";
 
 function shouldUsePaidFacade(selector: { providerKey?: string; costTier?: "free" | "paid" }): boolean {
   return selector.providerKey === "hero_sms" || selector.costTier === "paid";
-}
-
-function writeText(response: ServerResponse, statusCode: number, body: string): void {
-  response.writeHead(statusCode, {
-    "Content-Type": "text/plain; charset=utf-8",
-    "Content-Length": Buffer.byteLength(body).toString(),
-  });
-  response.end(body);
 }
 
 export interface EasySmsLegacyRouteContext {
@@ -35,12 +26,12 @@ export interface EasySmsLegacyRouteContext {
   path: string;
   url: URL;
   handler: EasySmsHttpHandler;
-  response: ServerResponse;
+  writeText(statusCode: number, body: string): void;
   readJsonBody<T>(): Promise<T>;
 }
 
 export async function handleLegacyRoute(context: EasySmsLegacyRouteContext): Promise<unknown | undefined> {
-  const { method, path, url, handler, response, readJsonBody } = context;
+  const { method, path, url, handler, writeText, readJsonBody } = context;
 
   if (
     method === "GET"
@@ -143,7 +134,7 @@ export async function handleLegacyRoute(context: EasySmsLegacyRouteContext): Pro
         : status.code
           ? `STATUS_OK:${status.code}`
           : "STATUS_WAIT_CODE";
-      writeText(response, 200, body);
+      writeText(200, body);
       return null;
     }
 
@@ -156,7 +147,7 @@ export async function handleLegacyRoute(context: EasySmsLegacyRouteContext): Pro
           ? "complete"
           : "request-code";
       const result = await handler.setActivationStatus(activationId, mappedAction, selector);
-      writeText(response, 200, result.resultText);
+      writeText(200, result.resultText);
       return null;
     }
   }

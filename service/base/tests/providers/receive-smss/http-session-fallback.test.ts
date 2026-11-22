@@ -1,88 +1,54 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-describe("Receive-SMSS HTTP session fallback", () => {
-  afterEach(() => {
-    vi.doUnmock("node:child_process");
-    vi.resetModules();
-    vi.restoreAllMocks();
-  });
+import { fetchReceiveSmssHtml } from "../../../src/providers/receive_smss/session-helper.js";
 
-  it("falls back to anonymous page fetch when the configured login path is forbidden", async () => {
-    const calls: string[][] = [];
-    vi.doMock("node:child_process", () => ({
-      execFile: vi.fn((
-        _command: string,
-        args: string[],
-        _options: unknown,
-        callback: (error: Error | null, stdout: string, stderr: string) => void,
-      ) => {
-        calls.push(args);
-        if (calls.length === 1) {
-          callback(new Error("helper failed"), "", "HTTP Error 403:");
-          return;
-        }
-        callback(null, "<html><body>anonymous directory</body></html>", "");
-      }),
-    }));
-
-    const { fetchReceiveSmssHtml } = await import("../../../src/providers/receive_smss/session-helper.js");
+describe("Receive-SMSS Web HTTP session fallback", () => {
+  it("falls back to anonymous page fetch when the configured login endpoint returns 403", async () => {
+    const visitedUrls: string[] = [];
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = String(input);
+      visitedUrls.push(url);
+      if (url === "https://receive-smss.com/login/") {
+        return new Response("Forbidden", { status: 403, statusText: "Forbidden" });
+      }
+      return new Response("<html><body>anonymous directory</body></html>", { status: 200 });
+    };
 
     const html = await fetchReceiveSmssHtml(
       "https://receive-smss.com/",
-      {
-        scraping: {
-          requestTimeoutMs: 15_000,
-        },
-      } as never,
+      { scraping: { requestTimeoutMs: 15_000 } } as never,
       { username: "configured-user", password: "configured-password" },
+      fetchImpl,
     );
 
     expect(html).toContain("anonymous directory");
-    expect(calls).toHaveLength(2);
-    expect(calls[0]).toContain("--login-username");
-    expect(calls[1]).not.toContain("--login-username");
-    expect(calls[1]).not.toContain("--login-password");
+    expect(visitedUrls).toEqual([
+      "https://receive-smss.com/login/",
+      "https://receive-smss.com/",
+    ]);
   });
 
-  it("tries the next header mode before moving to the next impersonation profile", async () => {
-    const calls: string[][] = [];
-    vi.doMock("node:child_process", () => ({
-      execFile: vi.fn((
-        _command: string,
-        args: string[],
-        _options: unknown,
-        callback: (error: Error | null, stdout: string, stderr: string) => void,
-      ) => {
-        calls.push(args);
-        if (calls.length === 1) {
-          callback(new Error("helper failed"), "", "curl: (35) TLS connect error");
-          return;
-        }
-        callback(null, "<html><body>receive-smss directory</body></html>", "");
-      }),
-    }));
-
-    const { fetchReceiveSmssHtml } = await import("../../../src/providers/receive_smss/session-helper.js");
+  it("tries the next header mode when an earlier header profile fails", async () => {
+    const headerSnapshots: Array<Record<string, string>> = [];
+    const fetchImpl = async (_input: string | URL | Request, init?: RequestInit) => {
+      const headers = Object.fromEntries(new Headers(init?.headers).entries());
+      headerSnapshots.push(headers);
+      if (headerSnapshots.length === 1) {
+        return new Response("Gateway error", { status: 502 });
+      }
+      return new Response("<html><body>receive-smss directory</body></html>", { status: 200 });
+    };
 
     const html = await fetchReceiveSmssHtml(
       "https://receive-smss.com/",
-      { scraping: { requestTimeoutMs: 30_000 } } as never,
+      { scraping: { requestTimeoutMs: 15_000 } } as never,
       undefined,
+      fetchImpl,
     );
 
     expect(html).toContain("receive-smss directory");
-    expect(calls).toHaveLength(2);
-    expect(calls[0]).toEqual(expect.arrayContaining([
-      "--impersonate-profile",
-      "chrome123",
-      "--header-mode",
-      "full-no-ua",
-    ]));
-    expect(calls[1]).toEqual(expect.arrayContaining([
-      "--impersonate-profile",
-      "chrome123",
-      "--header-mode",
-      "no-headers",
-    ]));
+    expect(headerSnapshots).toHaveLength(2);
+    expect(headerSnapshots[0]?.["accept-language"]).toBeTruthy();
+    expect(headerSnapshots[1]?.["accept-language"]).toBeUndefined();
   });
 });

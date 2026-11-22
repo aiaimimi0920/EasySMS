@@ -1,116 +1,30 @@
-# Configuration
+# Configuration & Secrets
 
-`EasySms` uses one root operator config:
+`EasySms` 区分 **云端公开部署配置**、**云端加密业务秘密** 与 **本地开发配置**。
 
-- `config.example.yaml`
-- `config.yaml`
+## 1. SpringBok 云端公开配置（`.sba/deployment.json`）
 
-All root scripts read this file and derive lower-level runtime files from it.
+公开配置进入部署计划与回执，**严禁包含任何密钥或密码**：
+- `workerName`：默认模板 `easysms-{instance}`
+- `workerOrigin`：默认模板 `https://easysms-{instance}.{subdomain:runtime}.workers.dev`（可在控制台选择已登记自定义域名子域，如 `https://sms.yamiyu.com`）
+- `runtimeOptions`：可选 JSON 覆盖项（如调整 `scraping.requestTimeoutMs` 或 `providers.enabledProviders`），默认 `null`
 
-## Root Sections
+## 2. SpringBok 加密秘密（`manifest.secrets`）
 
-### `userscript`
+| 秘密名称 | 类型 | 必填性 | 说明 |
+| --- | --- | --- | --- |
+| `EASYSMS_CLOUDFLARE_API_TOKEN` | 云账号秘密 | 必填 | 由 SpringBok Cloudflare 连接自动提供 |
+| `EASYSMS_API_KEY` | 业务秘密 | 必填 | 对外 HTTP API 的 Bearer 访问令牌（`>= 8` 字符） |
+| `EASYSMS_BACKUP_PASSPHRASE` | 业务秘密 | 必填 | D1 状态备份与预升级归属记录的加密口令 |
+| `EASYSMS_HEROSMS_API_KEY` | 业务秘密 | 可选 | 付费 HeroSMS API Key；不用时填 `"disabled"` |
+| `EASYSMS_ONLINESIM_API_KEY` | 业务秘密 | 可选 | OnlineSIM API Key；不用时填 `"disabled"` |
+| `EASYSMS_SMSTOME_EMAIL` | 业务秘密 | 可选 | SMSToMe 登录邮箱；不用时填 `"disabled"` |
+| `EASYSMS_SMSTOME_PASSWORD` | 业务秘密 | 可选 | SMSToMe 登录密码；不用时填 `"disabled"` |
+| `EASYSMS_RECEIVESMSS_USERNAME` | 业务秘密 | 可选 | Receive-SMSS 用户名；不用时填 `"disabled"` |
+| `EASYSMS_RECEIVESMSS_PASSWORD` | 业务秘密 | 可选 | Receive-SMSS 密码；不用时填 `"disabled"` |
+| `EASYSMS_RECEIVESMSFREECC_EMAIL` | 业务秘密 | 可选 | Receive-SMS-Free.cc 邮箱；不用时填 `"disabled"` |
+| `EASYSMS_RECEIVESMSFREECC_PASSWORD` | 业务秘密 | 可选 | Receive-SMS-Free.cc 密码；不用时填 `"disabled"` |
 
-Controls browser runtime generation:
+## 3. 本地开发配置（`config.yaml`）
 
-- `sourcePath`
-- `outputPath`
-- `copyToClipboard`
-- `defaults`
-
-`defaults` maps directly onto the `DEFAULTS` object embedded in
-`runtimes/userscript/easy_sms_proxy.user.js`.
-
-### `serviceBase`
-
-Controls container/runtime defaults:
-
-- `context`
-- `dockerfile`
-- `image`
-- `hostPort`
-- `containerName`
-- `containerEnvironment`
-- `runtime`
-
-`runtime` is rendered to:
-
-- `deploy/service/base/config/config.yaml`
-
-`containerEnvironment` is rendered to:
-
-- `deploy/service/base/config/runtime.env`
-
-Within `serviceBase.runtime.providers`, the `heroSms` subsection controls one
-concrete SMS provider whose `costTier` is `paid`:
-
-- `enabled`
-- `apiKey`
-- `baseUrl`
-- `defaultService`
-- `defaultCountry`
-
-At the API layer, free vs paid is not a separate architecture layer. It is a
-provider attribute exposed as `costTier`, and callers can filter provider
-catalog results with `costTier=free` or `costTier=paid`.
-
-Free synthetic activation sessions do not require additional provider config.
-They are derived from the enabled free providers that already support:
-
-- `list-public-numbers`
-- `read-public-inbox`
-
-Within `serviceBase.runtime.scraping`, `providerRequestTimeoutMs` can force a
-different request timeout per provider. Values are milliseconds. The built-in
-defaults intentionally give slower login-backed sources more time than the
-global `requestTimeoutMs`:
-
-- `smstome`: `75000`
-- `receive_smss`: `30000`
-- `receive_sms_free_cc`: `30000`
-- `sms24` / `yunduanxin`: `20000`
-- `onlinesim` / `hero_sms`: `15000`
-
-This keeps the global default short while allowing slow-but-usable providers
-such as SMSToMe to finish selection-plan refreshes.
-
-### `publishing.ghcr`
-
-Holds publication metadata for GHCR-oriented workflows and manual publishing
-flows.
-
-### `publishing.r2Config`
-
-Holds the blank-host/bootstrap distribution metadata used by:
-
-- `scripts/upload-service-base-r2-config.ps1`
-- `scripts/write-service-base-r2-bootstrap.ps1`
-- `deploy-host.ps1 -ImportCode`
-
-The canonical fields are:
-
-- `enabled`
-- `accountId`
-- `bucket`
-- `endpoint`
-- `configObjectKey`
-- `runtimeEnvObjectKey`
-- `userscriptSettingsObjectKey`
-- `manifestObjectKey`
-- `uploadAccessKeyId`
-- `uploadSecretAccessKey`
-- `readAccessKeyId`
-- `readSecretAccessKey`
-- `importCodeOwnerPublicKey`
-- `syncEnabled`
-- `syncIntervalSeconds`
-
-## Rendered Output
-
-`scripts/render-derived-configs.ps1` and `scripts/render-derived-configs.py`
-render:
-
-- service runtime YAML to `deploy/service/base/config/config.yaml`
-- service runtime env to `deploy/service/base/config/runtime.env`
-- userscript defaults JSON to `.tmp/derived/userscript-defaults.json`
-- a JSON summary of the loaded operator config to `.tmp/derived/config-summary.json`
+本地运行 `npm run dev` 时从仓库根目录 `config.yaml`（由 `config.example.yaml` 复制生成，已被 `.gitignore` 忽略）读取配置。

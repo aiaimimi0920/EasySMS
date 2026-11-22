@@ -4,14 +4,13 @@ import {
   buildReceiveSmssLoginPayload,
   detectReceiveSmssAccessGateHtml,
   getReceiveSmssHeaderModes,
-  getReceiveSmssImpersonationProfiles,
 } from "../../../src/providers/receive_smss/session-helper.js";
 
-describe("Receive-SMSS HTTP session helper", () => {
+describe("Receive-SMSS Web HTTP session helper", () => {
   it("builds the login payload expected by the site", () => {
-    expect(buildReceiveSmssLoginPayload("vmjcv666", "Qq365210!@#$%^")).toEqual({
-      log: "vmjcv666",
-      pwd: "Qq365210!@#$%^",
+    expect(buildReceiveSmssLoginPayload("demo-user", "demo-pass")).toEqual({
+      log: "demo-user",
+      pwd: "demo-pass",
       redirect_to: "/",
       instance: "",
       action: "login",
@@ -28,16 +27,7 @@ describe("Receive-SMSS HTTP session helper", () => {
     )).toBe(false);
   });
 
-  it("prefers profiles that can still retrieve the public directory", () => {
-    expect(getReceiveSmssImpersonationProfiles()).toEqual([
-      "chrome123",
-      "chrome124",
-      "chrome146",
-      "chrome120",
-    ]);
-  });
-
-  it("prefers header modes that do not override curl_cffi's browser user agent", () => {
+  it("orders header modes from full headers down to legacy fallback", () => {
     expect(getReceiveSmssHeaderModes()).toEqual([
       "full-no-ua",
       "no-headers",

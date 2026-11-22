@@ -29,6 +29,17 @@ export function buildOpenApiDocument(): Record<string, unknown> {
       { name: "Admin", description: "Operator-only runtime control endpoints." },
     ],
     paths: {
+      "/.well-known/easysms-release.json": {
+        get: {
+          tags: ["Health"],
+          summary: "Fetch public SpringBok SBA release identity metadata.",
+          responses: {
+            "200": {
+              description: "Public release identity document.",
+            },
+          },
+        },
+      },
       "/openapi.json": {
         get: {
           tags: ["Health"],
@@ -557,7 +568,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
             {
               name: "routeKind",
               in: "query",
-              schema: { type: "string", enum: ["list-public-numbers", "read-public-inbox"] },
+              schema: { type: "string", enum: ["list-public-numbers", "read-public-inbox", "activation-catalog", "create-activation", "get-activation-status"] },
             },
             {
               name: "healthState",
@@ -1701,7 +1712,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
             lastSuccessAt: { type: "string" },
             lastFailureAt: { type: "string" },
             lastEmptyAt: { type: "string" },
-            lastRouteKind: { type: "string", enum: ["list-public-numbers", "read-public-inbox"] },
+            lastRouteKind: { type: "string", enum: ["list-public-numbers", "read-public-inbox", "activation-catalog", "create-activation", "get-activation-status"] },
             lastDetail: { type: "string" },
             lastErrorClass: { type: "string" },
             lastErrorMessage: { type: "string" },
@@ -1724,7 +1735,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
           properties: {
             routeKey: { type: "string" },
             providerKey: { type: "string" },
-            routeKind: { type: "string", enum: ["list-public-numbers", "read-public-inbox"] },
+            routeKind: { type: "string", enum: ["list-public-numbers", "read-public-inbox", "activation-catalog", "create-activation", "get-activation-status"] },
             scopeKind: { type: "string", enum: ["provider", "country"] },
             scopeValue: { type: "string" },
             penalty: { type: "number" },
@@ -1752,7 +1763,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
             providerKey: { type: "string" },
             providerDisplayName: { type: "string" },
             checkedAt: { type: "string" },
-            routeKind: { type: "string", enum: ["list-public-numbers", "read-public-inbox"] },
+            routeKind: { type: "string", enum: ["list-public-numbers", "read-public-inbox", "activation-catalog", "create-activation", "get-activation-status"] },
             ok: { type: "boolean" },
             healthState: { type: "string", enum: ["unknown", "healthy", "empty", "challenge", "blocked", "degraded"] },
             status: { type: "string", enum: ["active", "cooling", "temporarily_disabled", "degraded", "offline"] },
@@ -1812,7 +1823,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
           properties: {
             providerKey: { type: "string" },
             providerDisplayName: { type: "string" },
-            routeKind: { type: "string", enum: ["list-public-numbers", "read-public-inbox"] },
+            routeKind: { type: "string", enum: ["list-public-numbers", "read-public-inbox", "activation-catalog", "create-activation", "get-activation-status"] },
             scopeKind: { type: "string", enum: ["provider", "country"] },
             scopeValue: { type: "string" },
             providerStatus: { type: "string", enum: ["active", "cooling", "temporarily_disabled", "degraded", "offline"] },

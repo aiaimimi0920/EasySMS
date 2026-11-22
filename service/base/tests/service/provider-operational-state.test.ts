@@ -330,4 +330,93 @@ describe("EasySmsProviderOperationalState", () => {
     expect(health?.lastErrorMessage).toBe(failure.route.lastErrorMessage);
     expect(health?.lastDetail).toBe(failure.route.lastErrorMessage);
   });
+
+  it("classifies HTTP 403 challenge, HTTP 429 rate-limit, and missing credential failures accurately", () => {
+    const state = new EasySmsProviderOperationalState([descriptor]);
+    const now = new Date("2026-05-15T12:00:00.000Z");
+
+    const challengeFailure = state.recordRouteFailure(
+      {
+        providerKey: descriptor.key,
+        providerDisplayName: descriptor.displayName,
+        routeKind: "list-public-numbers",
+        scopeKind: "provider",
+        scopeValue: "global",
+      },
+      new Error("HTTP Error 403: Forbidden"),
+      now,
+    );
+    expect(challengeFailure.route.lastHealthState).toBe("challenge");
+    expect(challengeFailure.route.lastErrorClass).toBe("application:challenge");
+    expect(challengeFailure.cooldownApplied).toBe(true);
+
+    const rateLimitFailure = state.recordRouteFailure(
+      {
+        providerKey: descriptor.key,
+        providerDisplayName: descriptor.displayName,
+        routeKind: "list-public-numbers",
+        scopeKind: "country",
+        scopeValue: "+1",
+      },
+      new Error("The requested URL returned error: 429"),
+      now,
+    );
+    expect(rateLimitFailure.route.lastHealthState).toBe("blocked");
+    expect(rateLimitFailure.route.lastErrorClass).toBe("route:network");
+    expect(rateLimitFailure.cooldownApplied).toBe(true);
+
+    const sslResetFailure = state.recordRouteFailure(
+      {
+        providerKey: descriptor.key,
+        providerDisplayName: descriptor.displayName,
+        routeKind: "list-public-numbers",
+        scopeKind: "country",
+        scopeValue: "+49",
+      },
+      new Error(
+        "Failed to fetch JSON from https://onlinesim.io/api/v1/free_numbers?apikey=<redacted>: curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to onlinesim.io:443",
+      ),
+      now,
+    );
+    expect(sslResetFailure.route.lastHealthState).toBe("blocked");
+    expect(sslResetFailure.route.lastErrorClass).toBe("route:network");
+    expect(sslResetFailure.route.lastErrorMessage).toContain("apikey=<redacted>: curl: (35)");
+
+    const authFailure = state.recordRouteFailure(
+      {
+        providerKey: descriptor.key,
+        providerDisplayName: descriptor.displayName,
+        routeKind: "read-public-inbox",
+        scopeKind: "provider",
+        scopeValue: "global",
+      },
+      new Error("SMSToMe route requires configured login credentials."),
+      now,
+    );
+    expect(authFailure.route.lastHealthState).toBe("degraded");
+    expect(authFailure.route.lastErrorClass).toBe("application:auth");
+    expect(authFailure.cooldownApplied).toBe(true);
+  });
+
+  it("redacts sensitive query secrets inside stored probe history entries", () => {
+    const state = new EasySmsProviderOperationalState([descriptor]);
+    state.recordProbeResult({
+      providerKey: descriptor.key,
+      providerDisplayName: descriptor.displayName,
+      ok: false,
+      status: "cooling",
+      healthState: "blocked",
+      healthScore: 0.25,
+      routeKind: "list-public-numbers",
+      checkedAt: "2026-05-15T12:00:00.000Z",
+      detail: "curl failed for https://onlinesim.io/api/getFreeList?lang=en&apikey=raw-probe-key",
+    });
+
+    const history = state.listProbeHistory(
+      { providerKey: descriptor.key },
+      new Date("2026-05-15T12:05:00.000Z"),
+    );
+    expect(history[0]?.detail).toContain("apikey=<redacted>");
+    expect(history[0]?.detail).not.toContain("raw-probe-key");
+  });
 });

@@ -164,6 +164,9 @@ function deriveErrorClassPenalty(errorClass: string | undefined): number {
   switch (errorClass) {
     case "application:challenge":
       return 25;
+    case "application:auth":
+    case "application:quota":
+      return 20;
     case "route:network":
       return 12;
     case "route:generic":
@@ -272,6 +275,10 @@ export function classifySmsProviderRouteFailure(error: unknown): SmsProviderRout
     "required to register or log in",
     "access denied",
     "managed challenge",
+    "http error 403",
+    "http 403",
+    "403 forbidden",
+    "returned error: 403",
   ];
   if (challengeMarkers.some((marker) => message.includes(marker))) {
     return {
@@ -285,8 +292,45 @@ export function classifySmsProviderRouteFailure(error: unknown): SmsProviderRout
     };
   }
 
+  const authMarkers = [
+    "api key is invalid",
+    "bad_key",
+    "apikey is not configured",
+    "requires configured login credentials",
+  ];
+  if (authMarkers.some((marker) => message.includes(marker))) {
+    return {
+      healthState: "degraded",
+      errorClass: "application:auth",
+      errorCode: "invalid_api_key",
+      penalty: 55,
+      cooldownBaseMs: 10 * 60 * 1000,
+      cooldownEscalatedMs: 45 * 60 * 1000,
+      escalateAfterCount: 2,
+    };
+  }
+
+  const quotaMarkers = [
+    "balance is insufficient",
+    "no_balance",
+  ];
+  if (quotaMarkers.some((marker) => message.includes(marker))) {
+    return {
+      healthState: "degraded",
+      errorClass: "application:quota",
+      errorCode: "insufficient_balance",
+      penalty: 55,
+      cooldownBaseMs: 10 * 60 * 1000,
+      cooldownEscalatedMs: 45 * 60 * 1000,
+      escalateAfterCount: 2,
+    };
+  }
+
   const blockedMarkers = [
     "tls",
+    "ssl_error_syscall",
+    "ssl_connect",
+    "openssl",
     "err_connection_closed",
     "connection closed",
     "fetch failed",
@@ -295,6 +339,10 @@ export function classifySmsProviderRouteFailure(error: unknown): SmsProviderRout
     "network error",
     "timeout",
     "failed to fetch response with curl",
+    "http error 429",
+    "http 429",
+    "too many requests",
+    "returned error: 429",
     "http 500",
     "http 502",
     "http 503",
@@ -471,6 +519,9 @@ export class EasySmsProviderOperationalState {
 
   public recordProbeResult(result: SmsProviderHealthProbeResult): SmsProviderProbeHistoryEntry {
     const snapshot = this.ensureProviderState(result.providerKey);
+    const sanitizedDetail = result.detail !== undefined
+      ? redactSensitiveText(normalizeText(result.detail))
+      : undefined;
     const nextEntry: SmsProviderProbeHistoryEntry = {
       providerKey: result.providerKey,
       providerDisplayName: result.providerDisplayName,
@@ -480,7 +531,7 @@ export class EasySmsProviderOperationalState {
       healthState: result.healthState,
       status: result.status,
       errorClass: snapshot.lastErrorClass,
-      detail: result.detail,
+      detail: sanitizedDetail,
       publicNumberCount: result.publicNumberCount,
       inboxMessageCount: result.inboxMessageCount,
     };

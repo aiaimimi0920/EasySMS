@@ -55,7 +55,6 @@ export class ReceiveSmsFreeCcProvider implements SmsProvider {
     this.config = withProviderRequestTimeout(config, descriptor.key);
     this.baseProvider = new TempLikeProvider(this.config, {
       descriptor,
-      fetchMode: "html",
       listUrl: receiveSmsFreeCcHomepageUrl,
       linkMatcher: /\/[A-Za-z-]+-Phone-Number\/\d+\/$/i,
       documentFetcher: async (url) => load(
@@ -73,7 +72,6 @@ export class ReceiveSmsFreeCcProvider implements SmsProvider {
     const listUrl = await resolveReceiveSmsFreeCcListUrl(this.config, options);
     const listProvider = new TempLikeProvider(this.config, {
       descriptor,
-      fetchMode: "html",
       listUrl,
       linkMatcher: /\/[A-Za-z-]+-Phone-Number\/\d+\/$/i,
       documentFetcher: this.baseProvider.documentFetcher,

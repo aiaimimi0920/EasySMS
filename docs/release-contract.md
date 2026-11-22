@@ -2,34 +2,20 @@
 
 Project: `EasySms`
 
-Release class: `standard-service-base`
+Release class: `springbok-cloudflare-workers`
 
-This repository follows the EasyAiMi release contract v1. The contract standardizes the operator-facing behavior of GitHub Actions, GHCR images, R2 config distribution, encrypted import-code artifacts, and blank-host local deployment. Project-specific build internals are allowed when the public contract remains stable.
+本仓库遵循面向 **SpringBok** 控制面的 Cloudflare Workers 服务发布契约。部署、同实例升级、独立验证、隔离预升级与测试环境清理由 `.sba/` 目录定义，不在本仓库维护独立的 GHCR 镜像或手写云端发布流水线。
 
-## Standard guarantees
+## 核心契约项
 
-- Manual publish workflows accept a standard `release_tag` override. Legacy `version` inputs remain supported where they already existed.
-- Publish metadata writes both `release_tag` and `version` outputs when the workflow has a release metadata step.
-- Config-bearing releases publish an R2 distribution manifest artifact and an encrypted owner import-code artifact.
-- Local deployment starts from `deploy-host.ps1` and must support an empty host directory using GHCR images plus an import code.
-- Deployment logic must not depend on bind mounting `C:\Users\Public\nas_home\AI\GameEditor\<Project>` source trees.
+- `.sba/manifest.json`（`schemaVersion: 3`）：声明稳定应用 ID `easysms`、固定 `ubuntu-24.04` / Node `22` 运行环境、五个必需动作（`deploy`、`update`、`verify`、`preview`、`destroy-preview`）及 11 个秘密名称引用。
+- `.sba/deployment.json`（`schemaVersion: 2`）：声明 `target: "cloudflare-workers"`、单 Cloudflare 运行账号、D1 状态数据库（`database`）、私有 R2 加密备份桶（`backups`）以及带 `{instance}` 隔离模板的 Worker 与域名目标。
+- `.sba/springbok.ps1` / `.sba/springbok.mjs`：接收 `-RequestPath` 与 `-ResultPath`，写前失败返回 `failed`，云写入开始后的不确定异常返回 `unknown` 且绝不自动重放。
+- `service/base/scripts/build-worker.mjs`：产出零 `node:` 运行时依赖的单文件 Worker 模块。
 
-## Workflows
-
-| Component | Workflow | Tag inputs | Required artifacts | Required capabilities |
-| --- | --- | --- | --- | --- |
-| `service-base` | `.github/workflows/publish-service-base-ghcr.yml` | `release_tag, version` | `service-base-r2-config-manifest, service-base-import-code-encrypted` | GHCR, R2, import-code |
-
-## Project-specific exceptions
-
-- Provider-specific smoke tests remain project-specific.
-
-## Verification
-
-Run this contract check from the repository root:
+## 本地校验命令
 
 ```powershell
-python scripts/validate-release-contract.py
+node .\scripts\validate-sba.mjs
+python .\scripts\validate-release-contract.py
 ```
-
-The check is intentionally textual. It verifies the workflow contract, artifact names, release tag aliases, the local deploy entrypoint, and this document without requiring live GitHub, GHCR, or R2 access.

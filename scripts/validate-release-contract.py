@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -34,49 +33,49 @@ def require_text(path: Path, needle: str) -> None:
         raise AssertionError(f"{path.relative_to(ROOT)} must contain {needle!r}")
 
 
-def require_regex(path: Path, pattern: str, label: str) -> None:
-    text = path.read_text(encoding="utf-8")
-    if not re.search(pattern, text, flags=re.MULTILINE):
-        raise AssertionError(f"{path.relative_to(ROOT)} missing {label}: {pattern}")
+def validate_sba(contract: dict[str, Any]) -> None:
+    sba = contract.get("sba") or {}
+    manifest_path = require_file(str(sba["manifestPath"]))
+    deployment_path = require_file(str(sba["deploymentPath"]))
+    require_file(str(sba["entrypoint"]))
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    deployment = json.loads(deployment_path.read_text(encoding="utf-8"))
+
+    if manifest.get("schemaVersion") != sba.get("manifestSchemaVersion"):
+        raise AssertionError("manifest.json schemaVersion mismatch")
+    if deployment.get("schemaVersion") != sba.get("deploymentSchemaVersion"):
+        raise AssertionError("deployment.json schemaVersion mismatch")
+    if deployment.get("target") != sba.get("target"):
+        raise AssertionError(f"deployment.json target must be {sba.get('target')}")
+
+    actions = manifest.get("actions") or {}
+    for action_name in sba.get("requiredActions", []):
+        if action_name not in actions:
+            raise AssertionError(f"manifest.json missing required SBA action: {action_name}")
+
+    resource_keys = {item.get("key") for item in (deployment.get("resources") or [])}
+    for key in sba.get("requiredResources", []):
+        if key not in resource_keys:
+            raise AssertionError(f"deployment.json missing required resource: {key}")
 
 
-def validate_workflow(workflow: dict[str, Any]) -> None:
-    relative = str(workflow["path"])
-    path = require_file(relative)
-    text = path.read_text(encoding="utf-8")
-    if "workflow_dispatch:" not in text:
-        raise AssertionError(f"{relative} must expose workflow_dispatch")
-
-    for input_name in workflow.get("releaseTagInputs", []):
-        require_regex(path, rf"^\s+{re.escape(input_name)}:\s*$", f"workflow_dispatch input {input_name}")
-
-    for output_name in workflow.get("releaseTagOutputs", []):
-        if f'echo "{output_name}=' not in text and f"echo '{output_name}=" not in text:
-            raise AssertionError(f"{relative} must write release metadata output {output_name}")
-
-    for artifact_name in workflow.get("artifacts", []):
-        require_regex(path, rf"^\s+name:\s*{re.escape(artifact_name)}\s*$", f"artifact {artifact_name}")
-
-    if workflow.get("requiresGhcr"):
-        if "docker/build-push-action" not in text and "docker build" not in text and "ghcr.io" not in text:
-            raise AssertionError(f"{relative} must contain a GHCR/docker image publication path")
-
-    if workflow.get("requiresR2"):
-        if "R2_CONFIG" not in text and "r2-config" not in text.lower():
-            raise AssertionError(f"{relative} must contain R2 config distribution wiring")
-
-    if workflow.get("requiresImportCode"):
-        if "import-code" not in text or "encrypt" not in text:
-            raise AssertionError(f"{relative} must generate an encrypted import-code artifact")
+def validate_worker(contract: dict[str, Any]) -> None:
+    worker = contract.get("worker") or {}
+    require_file(str(worker["sourceEntrypoint"]))
+    require_file(str(worker["buildScript"]))
+    require_file(str(worker["migrationSql"]))
 
 
-def validate_deploy(contract: dict[str, Any]) -> None:
-    deploy = contract.get("localDeploy", {})
-    entrypoint = str(deploy.get("entrypoint") or "").strip()
-    if entrypoint:
-        require_file(entrypoint)
-    if bool(deploy.get("zeroFolder")) and not entrypoint:
-        raise AssertionError("zeroFolder local deploys must declare an entrypoint")
+def validate_ci(contract: dict[str, Any]) -> None:
+    ci = contract.get("ci") or {}
+    workflow = require_file(str(ci["validateWorkflow"]))
+    require_text(workflow, "test-all.ps1")
+    require_text(workflow, "validate-release-contract.py")
+    if (ROOT / ".github" / "workflows" / "publish-service-base-ghcr.yml").exists():
+        raise AssertionError("legacy GHCR publish workflow must not exist in Cloudflare SBA mode")
+    if (ROOT / "deploy").exists():
+        raise AssertionError("legacy Docker deploy directory must not exist in Cloudflare SBA mode")
 
 
 def validate_doc(contract: dict[str, Any]) -> None:
@@ -93,9 +92,9 @@ def main() -> int:
         raise AssertionError("project is required")
     if not contract.get("releaseClass"):
         raise AssertionError("releaseClass is required")
-    for workflow in contract.get("workflows", []):
-        validate_workflow(workflow)
-    validate_deploy(contract)
+    validate_sba(contract)
+    validate_worker(contract)
+    validate_ci(contract)
     validate_doc(contract)
     print(f"release contract ok: {contract['project']} ({contract['releaseClass']})")
     return 0

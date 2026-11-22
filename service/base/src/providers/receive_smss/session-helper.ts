@@ -1,23 +1,10 @@
-import { execFile } from "node:child_process";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import type { EasySmsRuntimeConfig } from "../../domain/models.js";
+import { WebHttpSession, type FetchLike } from "../../shared/index.js";
 
-const receiveSmssPythonHelperPath = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "session_helper.py",
-);
+const LOGIN_URL = "https://receive-smss.com/login/";
 
 const receiveSmssAccessGatePattern =
   /attention required! \| cloudflare|just a moment|enable javascript and cookies to continue|正在进行安全验证/i;
-
-const receiveSmssImpersonationProfiles = [
-  "chrome123",
-  "chrome124",
-  "chrome146",
-  "chrome120",
-] as const;
 
 const receiveSmssHeaderModes = [
   "full-no-ua",
@@ -25,6 +12,8 @@ const receiveSmssHeaderModes = [
   "accept-only",
   "legacy",
 ] as const;
+
+export type ReceiveSmssHeaderMode = (typeof receiveSmssHeaderModes)[number];
 
 export interface ReceiveSmssAuthConfig {
   username?: string;
@@ -56,11 +45,7 @@ export function detectReceiveSmssAccessGateHtml(html: string): boolean {
   return receiveSmssAccessGatePattern.test(String(html ?? ""));
 }
 
-export function getReceiveSmssImpersonationProfiles(): string[] {
-  return [...receiveSmssImpersonationProfiles];
-}
-
-export function getReceiveSmssHeaderModes(): string[] {
+export function getReceiveSmssHeaderModes(): ReceiveSmssHeaderMode[] {
   return [...receiveSmssHeaderModes];
 }
 
@@ -76,9 +61,33 @@ export function resolveReceiveSmssAuthConfig(
   return { username, password };
 }
 
-function isCommandMissingError(error: Error): boolean {
-  const normalized = error.message.toLowerCase();
-  return normalized.includes("not found") || normalized.includes("cannot find");
+function buildHeaders(headerMode: ReceiveSmssHeaderMode, referer?: string): Record<string, string> {
+  let headers: Record<string, string>;
+  if (headerMode === "no-headers") {
+    headers = {};
+  } else if (headerMode === "accept-only") {
+    headers = {
+      Accept: "text/html,application/xhtml+xml",
+    };
+  } else if (headerMode === "legacy") {
+    headers = {
+      Accept: "text/html,application/xhtml+xml",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    };
+  } else {
+    headers = {
+      Accept: "text/html,application/xhtml+xml",
+      "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+    };
+  }
+
+  if (referer && headerMode !== "no-headers") {
+    headers.Referer = referer;
+  }
+  return headers;
 }
 
 function shouldRetryReceiveSmssAnonymously(error: Error): boolean {
@@ -90,111 +99,93 @@ function shouldRetryReceiveSmssAnonymously(error: Error): boolean {
     || normalized.includes("cloudflare");
 }
 
+async function attemptReceiveSmssFetch(
+  url: string,
+  headerMode: ReceiveSmssHeaderMode,
+  loginPayload: ReceiveSmssLoginPayload | undefined,
+  timeoutMs: number,
+  fetchImpl?: FetchLike,
+): Promise<string> {
+  const session = new WebHttpSession(fetchImpl);
+  if (loginPayload) {
+    const loginPage = await session.request(LOGIN_URL, {
+      method: "GET",
+      timeoutMs,
+      headers: buildHeaders(headerMode),
+    });
+    if (!loginPage.ok) {
+      throw new Error(`HTTP Error ${loginPage.status}: ${loginPage.statusText || "Login page blocked"}`);
+    }
+
+    const encodedForm = new URLSearchParams({
+      log: loginPayload.log,
+      pwd: loginPayload.pwd,
+      redirect_to: loginPayload.redirect_to,
+      instance: loginPayload.instance,
+      action: loginPayload.action,
+    }).toString();
+
+    const loginResponse = await session.request(LOGIN_URL, {
+      method: "POST",
+      timeoutMs,
+      headers: {
+        ...buildHeaders(headerMode, LOGIN_URL),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: encodedForm,
+    });
+    if (!loginResponse.ok) {
+      throw new Error(`HTTP Error ${loginResponse.status}: ${loginResponse.statusText || "Login rejected"}`);
+    }
+    if (!session.cookies.hasCookiePrefix("wordpress_logged_in_")) {
+      throw new Error("Receive-SMSS login did not establish a wordpress_logged_in session cookie.");
+    }
+  }
+
+  return session.getText(url, {
+    timeoutMs,
+    headers: buildHeaders(headerMode, url),
+  });
+}
+
 export async function fetchReceiveSmssHtml(
   url: string,
   config: EasySmsRuntimeConfig,
   auth: ReceiveSmssAuthConfig | undefined,
+  fetchImpl?: FetchLike,
 ): Promise<string> {
   const loginPayload = auth?.username && auth?.password
     ? buildReceiveSmssLoginPayload(auth.username, auth.password)
     : undefined;
-  const commandCandidates = process.platform === "win32"
-    ? [
-        { command: "python", prefix: [] as string[] },
-        { command: "python3", prefix: [] as string[] },
-        { command: "py", prefix: ["-3"] },
-      ]
-    : [
-        { command: "python3", prefix: [] as string[] },
-        { command: "python", prefix: [] as string[] },
-      ];
 
-  const buildArgs = (
-    payload: ReceiveSmssLoginPayload | undefined,
-    profile: string,
-    headerMode: string,
-  ): string[] => [
-    receiveSmssPythonHelperPath,
-    "--url",
-    url,
-    "--timeout-seconds",
-    String(Math.max(5, Math.ceil(config.scraping.requestTimeoutMs / 1000))),
-    "--impersonate-profile",
-    profile,
-    "--header-mode",
-    headerMode,
-    ...(payload
-      ? [
-          "--login-username",
-          payload.log,
-          "--login-password",
-          payload.pwd,
-        ]
-      : []),
-  ];
-
-  const runHelper = async (command: string, prefix: string[], args: string[]): Promise<string> => {
-    const stdout = await new Promise<string>((resolveOutput, reject) => {
-      execFile(
-        command,
-        [...prefix, ...args],
-        {
-          maxBuffer: 16 * 1024 * 1024,
-          timeout: config.scraping.requestTimeoutMs,
-          windowsHide: true,
-        },
-        (error, commandStdout, commandStderr) => {
-          if (error) {
-            const detail = commandStderr?.trim() || commandStdout?.trim() || error.message;
-            reject(new Error(detail));
-            return;
-          }
-          resolveOutput(commandStdout);
-        },
-      );
-    });
-
-    if (!stdout.trim()) {
-      throw new Error(`receive_smss helper returned an empty response for ${url}.`);
-    }
-
-    return stdout;
-  };
-
+  const totalTimeoutMs = Math.max(5_000, config.scraping.requestTimeoutMs);
+  const deadlineAtMs = Date.now() + totalTimeoutMs;
   let lastError: Error | undefined;
-  for (const candidate of commandCandidates) {
-    let commandMissing = false;
-    for (const profile of getReceiveSmssImpersonationProfiles()) {
-      for (const headerMode of getReceiveSmssHeaderModes()) {
+
+  for (const headerMode of getReceiveSmssHeaderModes()) {
+    const remainingMs = deadlineAtMs - Date.now();
+    if (remainingMs <= 0) {
+      break;
+    }
+    const attemptTimeoutMs = Math.max(2_500, Math.min(remainingMs, 10_000));
+    try {
+      return await attemptReceiveSmssFetch(url, headerMode, loginPayload, attemptTimeoutMs, fetchImpl);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (loginPayload && shouldRetryReceiveSmssAnonymously(lastError)) {
+        const fallbackRemainingMs = deadlineAtMs - Date.now();
+        if (fallbackRemainingMs <= 0) {
+          break;
+        }
+        const fallbackTimeoutMs = Math.max(2_500, Math.min(fallbackRemainingMs, 10_000));
         try {
-          return await runHelper(candidate.command, candidate.prefix, buildArgs(loginPayload, profile, headerMode));
-        } catch (error) {
-          lastError = error instanceof Error ? error : new Error(String(error));
-          if (isCommandMissingError(lastError)) {
-            commandMissing = true;
-            break;
-          }
-          if (loginPayload && shouldRetryReceiveSmssAnonymously(lastError)) {
-            try {
-              return await runHelper(candidate.command, candidate.prefix, buildArgs(undefined, profile, headerMode));
-            } catch (anonymousError) {
-              lastError = anonymousError instanceof Error ? anonymousError : new Error(String(anonymousError));
-              if (isCommandMissingError(lastError)) {
-                commandMissing = true;
-                break;
-              }
-            }
-          }
+          return await attemptReceiveSmssFetch(url, headerMode, undefined, fallbackTimeoutMs, fetchImpl);
+        } catch (anonymousError) {
+          lastError = anonymousError instanceof Error ? anonymousError : new Error(String(anonymousError));
         }
       }
-      if (commandMissing) {
-        break;
-      }
-    }
-    if (!commandMissing) {
-      throw lastError;
     }
   }
 
-  throw lastError ?? new Error("Python runtime is unavailable for receive_smss.");
+  throw lastError ?? new Error(`Timed out fetching ${url} via receive_smss HTTP session.`);
 }

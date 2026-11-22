@@ -54,15 +54,24 @@ export class SmsToMeProvider implements SmsProvider {
   }
 
   async listPublicNumbers(options: ListPublicNumbersOptions): Promise<SmsPublicNumber[]> {
+    const limit = options.limit ?? this.config.scraping.maxNumbersPerProvider;
     const root = await this.fetchDocument(this.descriptor.homepageUrl);
     const countryPages = this.parseCountryPages(root);
     const filteredCountryPages = countryPages.filter((country) =>
       matchesCountryFilter(country.countryCode, country.countryName, options.countryCode, options.countryName)
     );
 
-    const candidates: SmsPublicNumber[] = [];
+    const results: SmsPublicNumber[] = [];
+    const seenUrls = new Set<string>();
+    const perCountryInspectCap = Math.max(limit, 30);
+
     for (const country of filteredCountryPages) {
+      if (results.length >= limit) {
+        break;
+      }
+
       const $ = await this.fetchDocument(country.sourceUrl);
+      const countryCandidates: SmsPublicNumber[] = [];
       $("article.cp-phone-card").each((_, element) => {
         const phoneHref = $(element).find("a.cp-phone-card__number").attr("href");
         const phoneNumber = normalizeText($(element).find("a.cp-phone-card__number").first().text());
@@ -71,30 +80,40 @@ export class SmsToMeProvider implements SmsProvider {
           return;
         }
 
-        candidates.push({
+        const sourceUrl = resolveAbsoluteUrl(this.descriptor.homepageUrl, phoneHref);
+        if (seenUrls.has(sourceUrl)) {
+          return;
+        }
+        seenUrls.add(sourceUrl);
+
+        countryCandidates.push({
           providerKey: this.descriptor.key,
           providerDisplayName: this.descriptor.displayName,
           numberId: encodeNumberId({
             providerKey: this.descriptor.key,
-            sourceUrl: resolveAbsoluteUrl(this.descriptor.homepageUrl, phoneHref),
+            sourceUrl,
             phoneNumber,
             countryName: country.countryName,
             countryCode: country.countryCode,
           }),
-          sourceUrl: resolveAbsoluteUrl(this.descriptor.homepageUrl, phoneHref),
+          sourceUrl,
           phoneNumber,
           countryName: country.countryName,
           countryCode: country.countryCode,
           latestActivityText,
         });
       });
+
+      const remaining = limit - results.length;
+      const liveFromCountry = await filterSmsToMeLiveNumbers(
+        dedupeAndLimit(countryCandidates, perCountryInspectCap),
+        async (numberId) => this.getInbox(numberId),
+        remaining,
+      );
+      results.push(...liveFromCountry);
     }
 
-    return filterSmsToMeLiveNumbers(
-      dedupeAndLimit(candidates, Math.max(options.limit ?? this.config.scraping.maxNumbersPerProvider, 30)),
-      async (numberId) => this.getInbox(numberId),
-      options.limit ?? this.config.scraping.maxNumbersPerProvider,
-    );
+    return results.slice(0, limit);
   }
 
   async getInbox(numberId: string): Promise<SmsInboxSnapshot> {

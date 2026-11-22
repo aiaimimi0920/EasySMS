@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 2,
+  "target": "cloudflare-workers",
+  "accountPath": ["accountId"],
+  "accountMode": "single",
+  "accounts": [
+    {
+      "key": "runtime",
+      "label": "Cloudflare 运行账号",
+      "path": ["accountId"],
+      "secret": "EASYSMS_CLOUDFLARE_API_TOKEN"
+    }
+  ],
+  "applicationSecrets": [
+    "EASYSMS_API_KEY",
+    "EASYSMS_BACKUP_PASSPHRASE",
+    "EASYSMS_HEROSMS_API_KEY",
+    "EASYSMS_ONLINESIM_API_KEY",
+    "EASYSMS_SMSTOME_EMAIL",
+    "EASYSMS_SMSTOME_PASSWORD",
+    "EASYSMS_RECEIVESMSS_USERNAME",
+    "EASYSMS_RECEIVESMSS_PASSWORD",
+    "EASYSMS_RECEIVESMSFREECC_EMAIL",
+    "EASYSMS_RECEIVESMSFREECC_PASSWORD"
+  ],
+  "defaults": {
+    "service": {
+      "strategyModeId": "aggregate-latest",
+      "strictProviderMode": false,
+      "enabledProviders": [
+        "onlinesim",
+        "smstome",
+        "receive_smss",
+        "receive_sms_free_cc",
+        "sms24",
+        "yunduanxin"
+      ],
+      "heroSmsEnabled": true,
+      "heroSmsDefaultService": "dr",
+      "heroSmsDefaultCountry": 16,
+      "heroSmsSelectionMode": "balanced",
+      "keepRecentCount": 100
+    },
+    "runtimeOptions": null
+  },
+  "fields": [
+    {
+      "path": ["workerName"],
+      "label": "EasySms Worker 名称",
+      "type": "text",
+      "required": true,
+      "template": "easysms-{instance}"
+    },
+    {
+      "path": ["workerOrigin"],
+      "label": "EasySms HTTPS 访问入口",
+      "type": "text",
+      "required": true,
+      "template": "https://easysms-{instance}.{subdomain:runtime}.workers.dev"
+    },
+    {
+      "path": ["runtimeOptions"],
+      "label": "可选运行时覆盖配置 (JSON)",
+      "type": "json",
+      "required": false,
+      "template": null
+    }
+  ],
+  "resources": [
+    {
+      "key": "database",
+      "label": "EasySms 状态数据库 (D1)",
+      "kind": "d1",
+      "idPath": ["databaseId"],
+      "namePath": ["databaseName"],
+      "account": "runtime",
+      "nativeAccount": "runtime",
+      "nameTemplate": "easysms-{instance}-state"
+    },
+    {
+      "key": "backups",
+      "label": "EasySms 私有加密备份桶 (R2)",
+      "kind": "r2",
+      "idPath": ["backupBucketName"],
+      "namePath": null,
+      "account": "runtime",
+      "nativeAccount": "runtime",
+      "nameTemplate": "easysms-{instance}-backups"
+    }
+  ],
+  "targets": [
+    {
+      "kind": "worker",
+      "path": ["workerName"],
+      "account": "runtime"
+    },
+    {
+      "kind": "domain",
+      "path": ["workerOrigin"],
+      "account": "runtime"
+    }
+  ]
+}

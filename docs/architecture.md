@@ -1,59 +1,26 @@
 # Architecture
 
-`EasySms` is a single-repository monorepo that separates operator-facing layers
-by responsibility rather than by historical workspace boundaries.
+`EasySms` 采用纯 **Cloudflare Workers** 单体对外 HTTP 服务架构，配合 **Cloudflare D1** 持久化状态与 **私有 Cloudflare R2** 加密备份存储，通过 `.sba/` 接入 **SpringBok** 统一控制面。
 
-## Top-Level Structure
+```mermaid
+flowchart LR
+  Client["外部业务客户端 / SDK"] -->|"Bearer EASYSMS_API_KEY"| Worker["Cloudflare Worker (EasySms)"]
+  Worker -->|"STATE_DB"| D1["Cloudflare D1 (会话/租约/健康状态)"]
+  Worker -->|"HTTPS fetch + Cookie Jar"| Providers["上游通道 (HeroSMS / 免费公有池)"]
+  SpringBok["SpringBok 控制面 + 固定执行器"] -->|".sba/springbok.mjs"| Worker
+  SpringBok -->|"准备/核验"| D1
+  SpringBok -->|"AES-256-GCM 加密备份"| R2["私有 Cloudflare R2 (BACKUP_STORE)"]
+```
 
-- `service/base`
-  - canonical EasySMS HTTP runtime
-  - provider adapters, health logic, runtime config loading, and persistence
-- `runtimes/userscript`
-  - browser-side operator runtime for direct page interaction
-- `deploy/service/base`
-  - Dockerfile, compose, entrypoint, smoke, and publish helpers
-- `scripts`
-  - root operator entrypoints that read `config.yaml` and drive the lower-level
-    deploy/runtime assets
-- `docs`
-  - onboarding, architecture, workflow, and release guidance
+## 分层边界
 
-## Ownership Contract
-
-- `service/base` owns the product behavior and HTTP API.
-- `deploy/service/base` owns container packaging and runtime orchestration.
-- `runtimes/userscript` owns browser-native helper behavior.
-- root `scripts/` own the operator ergonomics and central config handling.
-
-## Provider Contract
-
-- Providers are the first-class integration boundary.
-- Free vs paid is modeled as provider metadata via `costTier`, not as a
-  separate architecture layer.
-- Public directory/inbox providers and activation-capable providers can expose
-  different capabilities while still living in the same provider catalog.
-- Clients can filter the unified catalog by `costTier` or `capability` instead
-  of switching to a different provider namespace.
-
-## External API Contract
-
-- Native routes and compatibility routes both terminate in the same service
-  layer.
-- `POST /sms/sessions/open` is now the canonical one-stop native entrypoint.
-- `POST /sms/sessions/plan` is the native non-mutating planning entrypoint.
-- `GET /stubs/handler_api.php?action=...` is the canonical compatibility facade
-  for HeroSMS or SMS-Activate style clients.
-- Free providers with readable public inboxes now participate in activation
-  flows through synthetic activation sessions, so callers do not need to know
-  whether the resolved backend is a paid API or a public inbox poller.
-- The formal machine-readable contract is exposed at `GET /openapi.json`.
-- Older primitive routes such as `/sms/public-numbers` and `/sms/activations`
-  remain available as compatibility and low-level inspection surfaces, not as
-  the preferred public integration layer.
-
-## Migration Contract
-
-- `SMSService` remains a read-only reference workspace.
-- forward development should happen only in `EasySms`
-- copy-only migration means the new repo may reshape assets internally, but it
-  must not modify or delete files in the legacy workspace
+1. **Web 接入与路由层（`service/base/src/worker/index.ts`、`src/http/web-router.ts`）**：
+   - 处理标准 Web `Request`/`Response` 与定时 `scheduled` 事件。
+   - 强制校验 `EASYSMS_API_KEY`（仅 `/healthz`、`/openapi.json`、`/.well-known/easysms-release.json` 匿名开放）。
+   - 在 `SBA_PURPOSE=preview` 下强制隔离付费激活与外部主动探测副作用。
+2. **领域与编排层（`EasySmsService` + `EasySmsProviderOperationalState`）**：
+   - 管理会话计划、号码复用租约、OTP 基线去重、失败冷却、探测趋势惩罚与 `keepRecentCount` 历史状态裁剪。
+3. **存储层（`service/base/src/persistence/d1-store.ts`）**：
+   - 基于 Cloudflare D1 `easysms_runtime_state` 表维护带单调 `revision` 与 `SHA-256` 完整性摘要的状态快照。
+4. **SpringBok SBA 适配层（`.sba/`）**：
+   - 实现 `deploy`、`update`、`verify`、`preview`、`destroy-preview` 五个生命周期动作。

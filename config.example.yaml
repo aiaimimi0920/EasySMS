@@ -1,58 +1,18 @@
-# EasySms operator config
+# EasySms local development config
 #
-# Copy this file to `config.yaml` and fill in the values you actually use.
-# The operator scripts read only the root `config.yaml`; they generate any
-# derived deploy files they need at runtime.
-
-userscript:
-  sourcePath: runtimes/userscript/easy_sms_proxy.user.js
-  outputPath: runtimes/userscript/easy_sms_proxy.local.user.js
-  copyToClipboard: false
-  defaults:
-    providerMode: auto
-    explicitProviderKey: onlinesim
-    selectedProvidersCsv: onlinesim,smstome,receive_smss,receive_sms_free_cc,sms24,yunduanxin
-    countryName: ""
-    countryCode: ""
-    overallLimit: "8"
-    pollSeconds: "5"
-    timeoutSeconds: "180"
-    senderContains: ""
-    codeRegex: "(?:^|[^\\d])(\\d{4,8})(?!\\d)"
-    newestFirst: "true"
-    autoFillPhoneOnAcquire: "false"
-    autoFillCodeOnRead: "false"
-    forceFillNonEmpty: "false"
-    highlightTargets: "false"
-    onlineSimApiKey: ""
-    smsToMeEmail: ""
-    smsToMePassword: ""
-    receiveSmssUsername: ""
-    receiveSmssPassword: ""
-    receiveSmsFreeCcEmail: ""
-    receiveSmsFreeCcPassword: ""
-    heroSmsApiKey: ""
-    heroSmsBaseUrl: "https://hero-sms.com/stubs/handler_api.php"
-    heroSmsService: "dr"
-    heroSmsCountry: "16"
-    heroSmsOperator: ""
-    heroSmsSelectionMode: "balanced"
-    heroSmsAllowReuse: "true"
-    heroSmsBusinessKey: "default"
-    heroSmsMaxBindingsPerPhone: "1"
+# Production and preview deployments on Cloudflare Workers are managed via
+# SpringBok using `.sba/manifest.json` (v3) and `.sba/deployment.json` (v2),
+# with secrets stored in SpringBok's encrypted `applicationSecrets` vault.
+#
+# For local development (`npm run dev` in `service/base`), copy this file to
+# `config.yaml` and fill in only the values you need locally.
 
 serviceBase:
-  context: .
-  dockerfile: deploy/service/base/Dockerfile
-  image: easy-sms/easy-sms-service:local
-  hostPort: 18081
-  containerName: easy-sms
-  containerEnvironment: {}
   runtime:
     server:
-      host: 0.0.0.0
+      host: 127.0.0.1
       port: 8080
-      # apiKey: "replace-with-bearer-token"
+      apiKey: "replace-with-local-bearer-token"
 
     strategy:
       strictProviderMode: false
@@ -73,19 +33,16 @@ serviceBase:
 
     scraping:
       requestTimeoutMs: 15000
-      # Provider-specific defaults override requestTimeoutMs when a source needs
-      # a slower HTTP/login path. Values are milliseconds and can be forced per
-      # provider from config without changing callers.
       providerRequestTimeoutMs:
         onlinesim: 15000
-        smstome: 75000
-        receive_smss: 30000
-        receive_sms_free_cc: 30000
+        smstome: 30000
+        receive_smss: 25000
+        receive_sms_free_cc: 25000
         sms24: 20000
         yunduanxin: 20000
         hero_sms: 15000
       maxNumbersPerProvider: 20
-      userAgent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36
+      userAgent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36
 
     providers:
       enabledProviders:
@@ -96,8 +53,6 @@ serviceBase:
         - sms24
         - yunduanxin
       onlineSim:
-        # Canonical service/base auth path for onlinesim.
-        # Official docs support either ?apikey=... or Authorization: Bearer <apikey>.
         apiKey: ""
       smsToMe:
         email: ""
@@ -109,8 +64,6 @@ serviceBase:
         email: ""
         password: ""
       synthetic:
-        # Free public-inbox leases are only local reservations; expire them so
-        # abandoned sessions do not drain the small public pools forever.
         leaseWindowSeconds: 1200
         terminalOutcomeCooldownSeconds: 7200
       heroSms:
@@ -124,26 +77,3 @@ serviceBase:
         defaultMaxBindingsPerPhone: 1
         refundableCancelWindowSeconds: 120
         leaseWindowSeconds: 1200
-
-publishing:
-  ghcr:
-    registry: ghcr.io
-    owner: ""
-    username: ""
-    token: ""
-  r2Config:
-    enabled: false
-    accountId: ""
-    bucket: ""
-    endpoint: ""
-    configObjectKey: easysms/service-base/config.yaml
-    runtimeEnvObjectKey: easysms/service-base/runtime.env
-    userscriptSettingsObjectKey: easysms/service-base/userscript-defaults.json
-    manifestObjectKey: easysms/service-base/manifest.json
-    uploadAccessKeyId: ""
-    uploadSecretAccessKey: ""
-    readAccessKeyId: ""
-    readSecretAccessKey: ""
-    importCodeOwnerPublicKey: ""
-    syncEnabled: true
-    syncIntervalSeconds: 7200

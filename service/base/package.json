@@ -7,7 +7,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-runtime-assets.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/build-worker.mjs",
+    "build:worker": "node scripts/build-worker.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/runtime/main.ts",
     "start": "node dist/src/runtime/main.js",
@@ -15,6 +16,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
+    "esbuild": "^0.28.1",
     "tsx": "^4.22.4",
     "typescript": "^5.9.2",
     "vitest": "^4.1.6"

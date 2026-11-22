@@ -68,7 +68,7 @@ import {
   HeroSmsActivationProvider,
   heroSmsActivationProviderDescriptor,
 } from "../activation-providers/hero_sms/index.js";
-import { decodeNumberId, inferCountryCode, normalizeText } from "../shared/index.js";
+import { decodeNumberId, inferCountryCode, normalizeText, redactSensitiveText } from "../shared/index.js";
 import {
   type SmsProviderRouteContext,
   EasySmsProviderOperationalState,
@@ -79,6 +79,8 @@ const DEFAULT_SYNTHETIC_COUNTRY_ID = 0;
 const INITIAL_SYNTHETIC_ACTIVATION_ID = 900000000;
 const INITIAL_SESSION_SEQUENCE = 1;
 const MAX_SELECTION_PLAN_FOREGROUND_REFRESH_MS = 5_000;
+const SYNTHETIC_FACADE_PROJECTION_CACHE_TTL_MS = 30_000;
+const MAX_SYNTHETIC_FACADE_SAMPLE_PER_PROVIDER = 8;
 const OTP_CODE_PATTERN = /(?:^|[^\d])(\d{4,8})(?!\d)/;
 const FREE_FACADE_COUNTRY_ID_OFFSET = 700000000;
 const HEROSMS_DEFAULT_BUSINESS_KEY = "default";
@@ -446,16 +448,21 @@ export class EasySmsService {
   readonly runtimeDiagnostics: EasySmsRuntimeDiagnostics;
   private readonly pendingSyntheticNumberIds: Set<string>;
   private readonly pendingSyntheticPhoneLookupKeys: Set<string>;
+  private readonly syntheticCountryProjectionCache: Map<string, {
+    expiresAtMs: number;
+    items: SyntheticCountryProjection[];
+  }>;
+  private readonly inFlightSyntheticCountryProjections: Map<string, Promise<SyntheticCountryProjection[]>>;
   private nextSyntheticActivationId: number;
   private nextSessionSequence: number;
 
   constructor(config: EasySmsRuntimeConfig, providers: SmsProvider[]) {
     this.config = config;
     this.providers = new Map(providers.map((provider) => [provider.descriptor.key, provider]));
-    this.operationalState = new EasySmsProviderOperationalState(this.listScrapeProviderDescriptors());
     this.heroSmsActivationProvider = config.providers.heroSms.enabled
       ? new HeroSmsActivationProvider(config)
       : undefined;
+    this.operationalState = new EasySmsProviderOperationalState(this.listOperationalProviderDescriptors());
     this.syntheticActivationSessions = new Map();
     this.syntheticActivationLeasesByKey = new Map();
     this.managedSessions = new Map();
@@ -468,6 +475,8 @@ export class EasySmsService {
     this.runtimeDiagnostics = this.createInitialRuntimeDiagnostics(config);
     this.pendingSyntheticNumberIds = new Set();
     this.pendingSyntheticPhoneLookupKeys = new Set();
+    this.syntheticCountryProjectionCache = new Map();
+    this.inFlightSyntheticCountryProjections = new Map();
     this.nextSyntheticActivationId = INITIAL_SYNTHETIC_ACTIVATION_ID;
     this.nextSessionSequence = INITIAL_SESSION_SEQUENCE;
   }
@@ -582,18 +591,38 @@ export class EasySmsService {
   }
 
   async listHeroSmsCountries(): Promise<HeroSmsCountry[]> {
-    return this.requireHeroSmsProvider().getCountries();
+    return this.executeHeroSmsRoute(
+      "activation-catalog",
+      async () => this.requireHeroSmsProvider().getCountries(),
+      (items) => ({
+        detail: `Loaded ${items.length} HeroSMS countr${items.length === 1 ? "y" : "ies"}.`,
+        itemCount: items.length,
+      }),
+    );
   }
 
   async listHeroSmsTopCountries(
     service = this.config.providers.heroSms.defaultService,
     ranked = true,
   ): Promise<HeroSmsCountryPrice[]> {
-    return this.requireHeroSmsProvider().getTopCountriesByService(service, ranked);
+    return this.executeHeroSmsRoute(
+      "activation-catalog",
+      async () => this.requireHeroSmsProvider().getTopCountriesByService(service, ranked),
+      (items) => ({
+        detail: `Loaded ${items.length} HeroSMS top-country quote${items.length === 1 ? "" : "s"} for service=${service}.`,
+        itemCount: items.length,
+      }),
+    );
   }
 
   async getHeroSmsPrices(service = this.config.providers.heroSms.defaultService): Promise<unknown> {
-    return this.requireHeroSmsProvider().getPrices(service);
+    return this.executeHeroSmsRoute(
+      "activation-catalog",
+      async () => this.requireHeroSmsProvider().getPrices(service),
+      () => ({
+        detail: `Loaded HeroSMS price matrix for service=${service}.`,
+      }),
+    );
   }
 
   async listFacadeCountries(
@@ -732,7 +761,14 @@ export class EasySmsService {
     country: number,
     service = this.config.providers.heroSms.defaultService,
   ): Promise<HeroSmsOperatorQuote[]> {
-    return this.requireHeroSmsProvider().getOperatorQuoteOptions(service, country);
+    return this.executeHeroSmsRoute(
+      "activation-catalog",
+      async () => this.requireHeroSmsProvider().getOperatorQuoteOptions(service, country),
+      (items) => ({
+        detail: `Loaded ${items.length} HeroSMS operator quote${items.length === 1 ? "" : "s"} for country=${country}, service=${service}.`,
+        itemCount: items.length,
+      }),
+    );
   }
 
   async createHeroSmsActivation(input: HeroSmsActivationCreateInput): Promise<HeroSmsActivationSession> {
@@ -912,14 +948,23 @@ export class EasySmsService {
         }
       }
 
-      const reusableLease = this.findReusableHeroSmsLeaseForInput(input);
-      if (reusableLease) {
-        const baselineStatus = await this.requireHeroSmsProvider().getActivationStatus(reusableLease.upstreamActivationId);
-        return this.createHeroSmsLogicalAssignment(
-          reusableLease,
-          this.buildHeroSmsReusePlan(reusableLease, input),
-          baselineStatus,
-        );
+      const heroSmsAvailabilityIssue = this.heroSmsActivationProvider
+        ? this.getHeroSmsAvailabilityIssue("create-activation")
+        : undefined;
+      if (!heroSmsAvailabilityIssue) {
+        const reusableLease = this.findReusableHeroSmsLeaseForInput(input);
+        if (reusableLease) {
+          const baselineStatus = await this.executeHeroSmsRoute(
+            "get-activation-status",
+            async () => this.requireHeroSmsProvider().getActivationStatus(reusableLease.upstreamActivationId),
+            () => ({ detail: "Verified HeroSMS reusable lease status." }),
+          );
+          return this.createHeroSmsLogicalAssignment(
+            reusableLease,
+            this.buildHeroSmsReusePlan(reusableLease, input),
+            baselineStatus,
+          );
+        }
       }
 
       if (this.heroSmsActivationProvider) {
@@ -1013,17 +1058,37 @@ export class EasySmsService {
   private async createManagedHeroSmsActivation(
     input: HeroSmsActivationCreateInput,
   ): Promise<HeroSmsActivationSession> {
-    const plan = await this.resolveHeroSmsActivationRequestPlan(input);
+    const provider = this.requireHeroSmsProvider();
+    this.assertHeroSmsAvailable("create-activation");
+
+    let plan: HeroSmsActivationRequestPlan;
+    try {
+      plan = await this.resolveHeroSmsActivationRequestPlan(input);
+    } catch (error) {
+      this.maybeRecordHeroSmsOperationalFailure("activation-catalog", error);
+      throw error;
+    }
+
     const reusableLease = plan.allowReuse
       ? await this.tryAcquireReusableHeroSmsLease(plan)
       : undefined;
 
     if (reusableLease) {
+      this.operationalState.recordRouteSuccess(this.buildHeroSmsRouteContext("create-activation"), {
+        detail: `Reused active HeroSMS lease upstreamActivationId=${reusableLease.lease.upstreamActivationId}.`,
+        itemCount: 1,
+      });
       return this.createHeroSmsLogicalAssignment(reusableLease.lease, plan, reusableLease.baselineStatus);
     }
 
-    const provider = this.requireHeroSmsProvider();
-    const activationAttempts = await this.buildHeroSmsActivationAttemptPlans(plan);
+    let activationAttempts: HeroSmsActivationAttemptPlan[];
+    try {
+      activationAttempts = await this.buildHeroSmsActivationAttemptPlans(plan);
+    } catch (error) {
+      this.maybeRecordHeroSmsOperationalFailure("activation-catalog", error);
+      throw error;
+    }
+
     let upstreamActivation: HeroSmsActivationSession | undefined;
     let successfulAttempt: HeroSmsActivationAttemptPlan | undefined;
     let lastRetryableError: unknown;
@@ -1034,6 +1099,7 @@ export class EasySmsService {
         break;
       } catch (error) {
         if (!this.shouldRetryHeroSmsActivationWithAlternatePlan(error)) {
+          this.maybeRecordHeroSmsOperationalFailure("create-activation", error);
           throw error;
         }
         lastRetryableError = error;
@@ -1050,6 +1116,11 @@ export class EasySmsService {
           `HeroSMS selection attempts exhausted: ${this.formatHeroSmsActivationAttemptSummary(activationAttempts)}`,
         );
     }
+
+    this.operationalState.recordRouteSuccess(this.buildHeroSmsRouteContext("create-activation"), {
+      detail: `Created HeroSMS activation ${upstreamActivation.activationId} for service=${plan.service}, country=${successfulAttempt.country.countryId}.`,
+      itemCount: 1,
+    });
 
     const openedAtIso = upstreamActivation.createdAtIso || new Date().toISOString();
     const openedAtMs = Date.parse(openedAtIso) || Date.now();
@@ -1080,19 +1151,31 @@ export class EasySmsService {
   private async getManagedHeroSmsActivationStatus(
     activationId: number,
   ): Promise<HeroSmsActivationStatusSnapshot> {
+    const readUpstreamStatus = async (targetActivationId: number): Promise<HeroSmsActivationStatusSnapshot> =>
+      this.executeHeroSmsRoute(
+        "get-activation-status",
+        async () => this.requireHeroSmsProvider().getActivationStatus(targetActivationId),
+        (snapshot) => ({
+          detail: snapshot.received
+            ? `HeroSMS activation ${targetActivationId} delivered an OTP.`
+            : `Polled HeroSMS activation ${targetActivationId} status.`,
+          itemCount: snapshot.received ? 1 : undefined,
+        }),
+      );
+
     const sessionId = this.managedSessionIdByActivationId.get(activationId);
     if (!sessionId) {
-      return this.requireHeroSmsProvider().getActivationStatus(activationId);
+      return readUpstreamStatus(activationId);
     }
 
     const session = this.getManagedSession(sessionId);
     if (session.providerKey !== "hero_sms" || session.sessionMode !== "paid-api") {
-      return this.requireHeroSmsProvider().getActivationStatus(activationId);
+      return readUpstreamStatus(activationId);
     }
 
     const upstreamActivationId = session.upstreamActivationId ?? activationId;
     const lease = this.heroSmsPaidLeasesByUpstreamActivationId.get(upstreamActivationId);
-    let status = await this.requireHeroSmsProvider().getActivationStatus(upstreamActivationId);
+    let status = await readUpstreamStatus(upstreamActivationId);
     status = this.rewriteHeroSmsStatusForLogicalAssignment(status, session, lease);
     this.maybeRecordHeroSmsSessionSuccess(session, status);
     return status;
@@ -2040,8 +2123,9 @@ export class EasySmsService {
 
     if (options.providerKey === "hero_sms" || options.costTier === "paid") {
       const provider = this.listProviders({ costTier: "paid", capability: "create-activation" }).find((item) => item.key === "hero_sms");
+      const availabilityIssue = provider ? this.getHeroSmsAvailabilityIssue("create-activation") : undefined;
       return {
-        planned: Boolean(provider),
+        planned: Boolean(provider && !availabilityIssue),
         routeKind: "open-sms-session",
         providerKey: provider?.key,
         providerDisplayName: provider?.displayName,
@@ -2052,9 +2136,11 @@ export class EasySmsService {
         countryName: input.countryName,
         numberId: input.numberId,
         compatibilityAction: "getNumberV2",
-        notes: provider
-          ? ["Planned against the paid activation provider layer."]
-          : ["No paid activation provider is currently enabled."],
+        notes: !provider
+          ? ["No paid activation provider is currently enabled."]
+          : availabilityIssue
+            ? [availabilityIssue.reason]
+            : ["Planned against the paid activation provider layer."],
       };
     }
 
@@ -2107,6 +2193,9 @@ export class EasySmsService {
       countryName: input.countryName,
       costTier: "free",
     }).filter((candidate) => {
+      if (!candidate.available) {
+        return false;
+      }
       const provider = this.providers.get(candidate.providerKey);
       return provider ? this.supportsSyntheticActivation(provider.descriptor) : false;
     });
@@ -2131,27 +2220,47 @@ export class EasySmsService {
       };
     }
 
-    if (!options.providerKey && !options.costTier) {
-      const reusableLease = this.findReusableHeroSmsLeaseForInput(input);
-      if (reusableLease) {
-        return {
-          planned: true,
-          routeKind: "open-sms-session",
-          providerKey: "hero_sms",
-          providerDisplayName: heroSmsActivationProviderDescriptor.displayName,
-          costTier: "paid",
-          sessionMode: "paid-api",
-          countryId: reusableLease.countryId,
-          countryCode: reusableLease.countryCode,
-          countryName: reusableLease.countryName,
-          phoneNumber: reusableLease.phoneNumber,
-          compatibilityAction: "getNumberV2",
-          notes: [
-            `Reuse active paid HeroSMS lease for businessKey=${reusableLease.businessKey}.`,
-            `Current assignments: ${reusableLease.logicalActivationIds.length}/${reusableLease.maxBindingsPerPhone}.`,
-          ],
-        };
-      }
+    if (options.costTier === "free" || options.providerKey) {
+      return {
+        planned: false,
+        routeKind: "open-sms-session",
+        notes: ["No eligible free SMS session route is currently available."],
+      };
+    }
+
+    const paidAvailabilityIssue = this.heroSmsActivationProvider
+      ? this.getHeroSmsAvailabilityIssue("create-activation")
+      : undefined;
+    if (paidAvailabilityIssue) {
+      return {
+        planned: false,
+        routeKind: "open-sms-session",
+        notes: [
+          "No eligible SMS session route is currently available.",
+          paidAvailabilityIssue.reason,
+        ],
+      };
+    }
+
+    const reusableLease = this.findReusableHeroSmsLeaseForInput(input);
+    if (reusableLease) {
+      return {
+        planned: true,
+        routeKind: "open-sms-session",
+        providerKey: "hero_sms",
+        providerDisplayName: heroSmsActivationProviderDescriptor.displayName,
+        costTier: "paid",
+        sessionMode: "paid-api",
+        countryId: reusableLease.countryId,
+        countryCode: reusableLease.countryCode,
+        countryName: reusableLease.countryName,
+        phoneNumber: reusableLease.phoneNumber,
+        compatibilityAction: "getNumberV2",
+        notes: [
+          `Reuse active paid HeroSMS lease for businessKey=${reusableLease.businessKey}.`,
+          `Current assignments: ${reusableLease.logicalActivationIds.length}/${reusableLease.maxBindingsPerPhone}.`,
+        ],
+      };
     }
 
     const paidProvider = this.listProviders({ costTier: "paid", capability: "create-activation" }).find((item) => item.key === "hero_sms");
@@ -2908,9 +3017,9 @@ export class EasySmsService {
       checkedAt,
       detail: result.detail,
       lastError: result.error instanceof Error
-        ? result.error.message
+        ? redactSensitiveText(result.error.message)
         : typeof result.error === "string"
-          ? result.error
+          ? redactSensitiveText(result.error)
           : undefined,
     };
   }
@@ -2971,13 +3080,21 @@ export class EasySmsService {
     loop.lastFailedAt = completedAt.toISOString();
     loop.lastDurationMs = completedAt.getTime() - startedAt.getTime();
     loop.detail = detail;
-    loop.lastError = error instanceof Error ? error.message : String(error);
+    loop.lastError = redactSensitiveText(error instanceof Error ? error.message : String(error));
   }
 
   private listProviderCatalog(): ProviderDescriptor[] {
     const descriptors = this.listScrapeProviderDescriptors().map((descriptor) =>
       this.toCatalogDescriptor(descriptor)
     );
+    if (this.heroSmsActivationProvider) {
+      descriptors.push(heroSmsActivationProviderDescriptor);
+    }
+    return descriptors;
+  }
+
+  private listOperationalProviderDescriptors(): ProviderDescriptor[] {
+    const descriptors = [...this.listScrapeProviderDescriptors()];
     if (this.heroSmsActivationProvider) {
       descriptors.push(heroSmsActivationProviderDescriptor);
     }
@@ -2997,9 +3114,7 @@ export class EasySmsService {
       healthScore: 1,
       consecutiveFailures: 0,
       activeRouteCoolingCount: 0,
-      lastDetail: descriptor.costTier === "paid"
-        ? "This provider is enabled but does not participate in scrape-route health probes."
-        : "This provider is enabled but has not reported scrape-route health yet.",
+      lastDetail: "This provider is enabled but has not reported route health yet.",
     };
   }
 
@@ -3041,6 +3156,8 @@ export class EasySmsService {
 
   hydrateRuntimeState(snapshot: EasySmsRuntimeStateSnapshot | undefined, now: Date = new Date()): void {
     this.operationalState.hydrate(snapshot, now);
+    this.syntheticCountryProjectionCache.clear();
+    this.inFlightSyntheticCountryProjections.clear();
     this.syntheticActivationSessions.clear();
     this.syntheticActivationLeasesByKey.clear();
     this.managedSessions.clear();
@@ -3363,6 +3480,10 @@ export class EasySmsService {
   }
 
   async probeProvider(providerKey: string, now: Date = new Date()): Promise<SmsProviderHealthProbeResult> {
+    if (providerKey === "hero_sms" && this.heroSmsActivationProvider) {
+      return this.probeHeroSmsProvider(now);
+    }
+
     const provider = this.providers.get(providerKey);
     if (!provider) {
       throw new ProviderNotFoundError(providerKey);
@@ -3388,7 +3509,7 @@ export class EasySmsService {
           detail: "Provider returned an empty public number directory.",
           checkedAt: now.toISOString(),
           publicNumberCount: 0,
-        });
+        }, now);
         this.operationalState.recordProbeResult(result);
         return result;
       }
@@ -3411,7 +3532,7 @@ export class EasySmsService {
             checkedAt: now.toISOString(),
             publicNumberCount: items.length,
             inboxMessageCount: inbox.messages.length,
-          });
+          }, now);
           this.operationalState.recordProbeResult(result);
           return result;
         } catch (error) {
@@ -3419,12 +3540,12 @@ export class EasySmsService {
           const result = this.buildProbeResult(provider.descriptor.key, provider.descriptor.displayName, {
             ok: false,
             routeKind: "read-public-inbox",
-            detail: error instanceof Error ? error.message : String(error),
+            detail: redactSensitiveText(normalizeText(error instanceof Error ? error.message : String(error))),
             checkedAt: now.toISOString(),
             publicNumberCount: items.length,
             routeKey: failure.route.routeKey,
             cooldownApplied: failure.cooldownApplied,
-          });
+          }, now);
           this.operationalState.recordProbeResult(result);
           return result;
         }
@@ -3436,7 +3557,7 @@ export class EasySmsService {
         detail: `Probe succeeded with ${items.length} public number${items.length === 1 ? "" : "s"}.`,
         checkedAt: now.toISOString(),
         publicNumberCount: items.length,
-      });
+      }, now);
       this.operationalState.recordProbeResult(result);
       return result;
     } catch (error) {
@@ -3444,18 +3565,64 @@ export class EasySmsService {
       const result = this.buildProbeResult(provider.descriptor.key, provider.descriptor.displayName, {
         ok: false,
         routeKind: "list-public-numbers",
-        detail: error instanceof Error ? error.message : String(error),
+        detail: redactSensitiveText(normalizeText(error instanceof Error ? error.message : String(error))),
         checkedAt: now.toISOString(),
         routeKey: failure.route.routeKey,
         cooldownApplied: failure.cooldownApplied,
+      }, now);
+      this.operationalState.recordProbeResult(result);
+      return result;
+    }
+  }
+
+  private async probeHeroSmsProvider(now: Date = new Date()): Promise<SmsProviderHealthProbeResult> {
+    const provider = this.requireHeroSmsProvider();
+    const service = this.config.providers.heroSms.defaultService;
+    const catalogContext = this.buildHeroSmsRouteContext("activation-catalog");
+
+    try {
+      const topCountries = await provider.getTopCountriesByService(service, true);
+      const availableStock = topCountries.reduce((sum, item) => sum + Math.max(0, item.count ?? 0), 0);
+      const hasUsableCountries = topCountries.some((item) => (item.count ?? 1) > 0);
+      const reportedCount = availableStock > 0 ? availableStock : topCountries.length;
+
+      this.operationalState.recordRouteSuccess(catalogContext, {
+        detail: hasUsableCountries
+          ? `Probe verified HeroSMS catalog for service=${service} (${topCountries.length} countr${topCountries.length === 1 ? "y" : "ies"}, stock=${reportedCount}).`
+          : `Probe reached HeroSMS, but no stock was reported for service=${service}.`,
+        itemCount: reportedCount,
+        isEmpty: !hasUsableCountries,
+        now,
       });
+
+      const result = this.buildProbeResult(provider.descriptor.key, provider.descriptor.displayName, {
+        ok: hasUsableCountries,
+        routeKind: "activation-catalog",
+        detail: hasUsableCountries
+          ? `Probe succeeded with ${topCountries.length} HeroSMS countr${topCountries.length === 1 ? "y" : "ies"} for service=${service}.`
+          : `HeroSMS returned no available stock for service=${service}.`,
+        checkedAt: now.toISOString(),
+        publicNumberCount: hasUsableCountries ? reportedCount : 0,
+      }, now);
+      this.operationalState.recordProbeResult(result);
+      return result;
+    } catch (error) {
+      const failure = this.operationalState.recordRouteFailure(catalogContext, error, now);
+      const result = this.buildProbeResult(provider.descriptor.key, provider.descriptor.displayName, {
+        ok: false,
+        routeKind: "activation-catalog",
+        detail: redactSensitiveText(normalizeText(error instanceof Error ? error.message : String(error))),
+        checkedAt: now.toISOString(),
+        routeKey: failure.route.routeKey,
+        cooldownApplied: failure.cooldownApplied,
+      }, now);
       this.operationalState.recordProbeResult(result);
       return result;
     }
   }
 
   async probeAllProviders(now: Date = new Date()): Promise<SmsProviderHealthProbeResult[]> {
-    const providerKeys = Array.from(this.providers.values(), (p) => p.descriptor.key);
+    const providerKeys = this.listOperationalProviderDescriptors().map((descriptor) => descriptor.key);
     const batchSize = 3;
     const results: SmsProviderHealthProbeResult[] = [];
 
@@ -3479,6 +3646,7 @@ export class EasySmsService {
   }
 
   resetOperationalState(providerKey?: string, now: Date = new Date()) {
+    this.syntheticCountryProjectionCache.clear();
     return this.operationalState.resetProvider(providerKey, now);
   }
 
@@ -3487,17 +3655,127 @@ export class EasySmsService {
     input: { until: Date; reason: string; now?: Date },
   ): SmsProviderHealthSnapshot {
     this.ensureProviderKeyExists(providerKey);
+    this.syntheticCountryProjectionCache.clear();
     return this.operationalState.markTemporaryDisabled(providerKey, input);
   }
 
   enableProvider(providerKey: string, now: Date = new Date()): SmsProviderHealthSnapshot {
     this.ensureProviderKeyExists(providerKey);
+    this.syntheticCountryProjectionCache.clear();
     return this.operationalState.clearTemporaryDisabled(providerKey, now);
   }
 
   runMaintenance(now: Date = new Date()) {
     return {
       refreshed: this.refreshOperationalState(now),
+      pruned: this.pruneHistoricalRuntimeState(now),
+    };
+  }
+
+  private pruneHistoricalRuntimeState(now: Date = new Date()): {
+    sessions: number;
+    leases: number;
+    issuedNumbers: number;
+  } {
+    const keepRecentCount = Math.max(1, this.config.maintenance.keepRecentCount || 100);
+    const nowMs = now.getTime();
+    const outcomeCooldownMs = Math.max(0, this.config.providers.synthetic.terminalOutcomeCooldownSeconds) * 1000;
+
+    for (const [key, entry] of this.syntheticCountryProjectionCache.entries()) {
+      if (entry.expiresAtMs <= nowMs) {
+        this.syntheticCountryProjectionCache.delete(key);
+      }
+    }
+
+    const sortedSessions = this.querySessions({ newestFirst: true });
+    const retainedIds = new Set<string>(sortedSessions.slice(0, keepRecentCount).map((session) => session.id));
+    let prunedSessions = 0;
+
+    for (const session of sortedSessions.slice(keepRecentCount)) {
+      const leaseExpiresAtMs = session.leaseExpiresAtIso ? Date.parse(session.leaseExpiresAtIso) : undefined;
+      const isLeaseActive = !session.cancelledAtIso
+        && !session.completedAtIso
+        && (leaseExpiresAtMs === undefined || !Number.isFinite(leaseExpiresAtMs) || leaseExpiresAtMs > nowMs);
+      if (isLeaseActive) {
+        retainedIds.add(session.id);
+        continue;
+      }
+
+      const outcomeRecordedAtMs = session.lastReportedOutcome?.recordedAtIso
+        ? Date.parse(session.lastReportedOutcome.recordedAtIso)
+        : undefined;
+      const isOutcomeCooldownActive = this.isPhoneScopedTerminalOutcomeCooling(session.lastReportedOutcome, nowMs)
+        || (
+          session.lastReportedOutcome
+          && !session.lastReportedOutcome.success
+          && outcomeRecordedAtMs !== undefined
+          && Number.isFinite(outcomeRecordedAtMs)
+          && outcomeRecordedAtMs + outcomeCooldownMs > nowMs
+        );
+      if (isOutcomeCooldownActive) {
+        retainedIds.add(session.id);
+        continue;
+      }
+
+      this.managedSessions.delete(session.id);
+      this.managedSessionIdByActivationId.delete(session.activationId);
+      this.syntheticActivationSessions.delete(session.activationId);
+      this.observedMessages.delete(session.id);
+      this.projectedMessages.delete(session.id);
+      prunedSessions += 1;
+    }
+
+    let prunedLeases = 0;
+    for (const [leaseKey, lease] of this.syntheticActivationLeasesByKey.entries()) {
+      lease.logicalActivationIds = lease.logicalActivationIds.filter((id) =>
+        this.managedSessionIdByActivationId.has(id),
+      );
+      if (!this.isSyntheticLeaseActive(lease, nowMs) && lease.logicalActivationIds.length === 0) {
+        this.syntheticActivationLeasesByKey.delete(leaseKey);
+        prunedLeases += 1;
+      }
+    }
+
+    for (const [upstreamId, lease] of this.heroSmsPaidLeasesByUpstreamActivationId.entries()) {
+      lease.logicalActivationIds = lease.logicalActivationIds.filter((id) =>
+        this.managedSessionIdByActivationId.has(id),
+      );
+      const expiresAtMs = Date.parse(lease.leaseExpiresAtIso);
+      const isExpiredOrClosed = Boolean(lease.cancelledAtIso || lease.completedAtIso)
+        || (Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs);
+      if (isExpiredOrClosed && lease.logicalActivationIds.length === 0) {
+        this.heroSmsPaidLeasesByUpstreamActivationId.delete(upstreamId);
+        prunedLeases += 1;
+      }
+    }
+
+    const maxIssuedNumbers = Math.max(keepRecentCount * 5, 200);
+    let prunedIssuedNumbers = 0;
+    if (this.issuedNumbers.size > maxIssuedNumbers) {
+      const activeNumberIds = new Set<string>();
+      for (const session of this.managedSessions.values()) {
+        if (session.numberId) {
+          activeNumberIds.add(session.numberId);
+        }
+      }
+
+      const excessCount = this.issuedNumbers.size - maxIssuedNumbers;
+      for (const numberId of this.issuedNumbers.keys()) {
+        if (prunedIssuedNumbers >= excessCount) {
+          break;
+        }
+        if (activeNumberIds.has(numberId)) {
+          continue;
+        }
+        this.issuedNumbers.delete(numberId);
+        prunedIssuedNumbers += 1;
+      }
+    }
+
+    return {
+      sessions: prunedSessions,
+      leases: prunedLeases,
+      issuedNumbers: prunedIssuedNumbers,
     };
   }
 
@@ -3707,8 +3985,95 @@ export class EasySmsService {
   }
 
   private ensureProviderKeyExists(providerKey: string): void {
-    if (!this.providers.has(providerKey)) {
-      throw new ProviderNotFoundError(providerKey);
+    if (this.providers.has(providerKey)) {
+      return;
+    }
+    if (providerKey === "hero_sms" && this.heroSmsActivationProvider) {
+      return;
+    }
+    throw new ProviderNotFoundError(providerKey);
+  }
+
+  private buildHeroSmsRouteContext(
+    routeKind: Extract<SmsProviderRouteKind, "activation-catalog" | "create-activation" | "get-activation-status">,
+    countryValue?: string,
+  ): SmsProviderRouteContext {
+    if (countryValue) {
+      return {
+        providerKey: heroSmsActivationProviderDescriptor.key,
+        providerDisplayName: heroSmsActivationProviderDescriptor.displayName,
+        routeKind,
+        scopeKind: "country",
+        scopeValue: countryValue,
+      };
+    }
+
+    return {
+      providerKey: heroSmsActivationProviderDescriptor.key,
+      providerDisplayName: heroSmsActivationProviderDescriptor.displayName,
+      routeKind,
+      scopeKind: "provider",
+      scopeValue: "global",
+    };
+  }
+
+  private getHeroSmsAvailabilityIssue(
+    routeKind: Extract<SmsProviderRouteKind, "activation-catalog" | "create-activation" | "get-activation-status">,
+    now: Date = new Date(),
+  ) {
+    if (!this.heroSmsActivationProvider) {
+      return undefined;
+    }
+    return this.operationalState.getAvailabilityIssue(this.buildHeroSmsRouteContext(routeKind), now);
+  }
+
+  private assertHeroSmsAvailable(
+    routeKind: Extract<SmsProviderRouteKind, "activation-catalog" | "create-activation" | "get-activation-status">,
+    now: Date = new Date(),
+  ): void {
+    const issue = this.getHeroSmsAvailabilityIssue(routeKind, now);
+    if (issue) {
+      throw new ProviderRouteUnavailableError("hero_sms", issue.reason);
+    }
+  }
+
+  private isHeroSmsCriteriaScopedError(error: unknown): boolean {
+    if (error instanceof ProviderRouteUnavailableError || error instanceof ProviderNotFoundError) {
+      return true;
+    }
+    if (error instanceof ValidationError) {
+      const normalized = error.message.toLowerCase();
+      return !normalized.includes("apikey is not configured");
+    }
+    return this.shouldRetryHeroSmsActivationWithAlternatePlan(error);
+  }
+
+  private maybeRecordHeroSmsOperationalFailure(
+    routeKind: Extract<SmsProviderRouteKind, "activation-catalog" | "create-activation" | "get-activation-status">,
+    error: unknown,
+    now: Date = new Date(),
+  ): void {
+    if (!this.heroSmsActivationProvider || this.isHeroSmsCriteriaScopedError(error)) {
+      return;
+    }
+    this.operationalState.recordRouteFailure(this.buildHeroSmsRouteContext(routeKind), error, now);
+  }
+
+  private async executeHeroSmsRoute<T>(
+    routeKind: Extract<SmsProviderRouteKind, "activation-catalog" | "create-activation" | "get-activation-status">,
+    operation: () => Promise<T>,
+    describeSuccess: (result: T) => { detail: string; itemCount?: number; isEmpty?: boolean },
+  ): Promise<T> {
+    this.requireHeroSmsProvider();
+    this.assertHeroSmsAvailable(routeKind);
+    try {
+      const result = await operation();
+      const summary = describeSuccess(result);
+      this.operationalState.recordRouteSuccess(this.buildHeroSmsRouteContext(routeKind), summary);
+      return result;
+    } catch (error) {
+      this.maybeRecordHeroSmsOperationalFailure(routeKind, error);
+      throw error;
     }
   }
 
@@ -4026,31 +4391,93 @@ export class EasySmsService {
       return [];
     }
 
+    const cacheKey = options.providerKey?.trim() || "*";
+    const nowMs = Date.now();
+    const cached = this.syntheticCountryProjectionCache.get(cacheKey);
+    if (cached && cached.expiresAtMs > nowMs) {
+      return cached.items.map((item) => ({
+        ...item,
+        providerCounts: new Map(item.providerCounts),
+      }));
+    }
+
+    const inFlight = this.inFlightSyntheticCountryProjections.get(cacheKey);
+    if (inFlight) {
+      const resolved = await inFlight;
+      return resolved.map((item) => ({
+        ...item,
+        providerCounts: new Map(item.providerCounts),
+      }));
+    }
+
+    const task = this.computeSyntheticCountryProjections(options)
+      .then((items) => {
+        this.syntheticCountryProjectionCache.set(cacheKey, {
+          expiresAtMs: Date.now() + SYNTHETIC_FACADE_PROJECTION_CACHE_TTL_MS,
+          items,
+        });
+        return items;
+      })
+      .finally(() => {
+        this.inFlightSyntheticCountryProjections.delete(cacheKey);
+      });
+
+    this.inFlightSyntheticCountryProjections.set(cacheKey, task);
+    const items = await task;
+    return items.map((item) => ({
+      ...item,
+      providerCounts: new Map(item.providerCounts),
+    }));
+  }
+
+  private async computeSyntheticCountryProjections(
+    options: { providerKey?: string; costTier?: CostTier } = {},
+  ): Promise<SyntheticCountryProjection[]> {
     const eligibleProviders = this.resolveProvidersForSyntheticMetadata(options.providerKey);
     const countries = new Map<string, SyntheticCountryProjection>();
+    const sampleLimit = Math.max(
+      1,
+      Math.min(this.config.scraping.maxNumbersPerProvider, MAX_SYNTHETIC_FACADE_SAMPLE_PER_PROVIDER),
+    );
+    const batchSize = 3;
 
-    for (const provider of eligibleProviders) {
-      const context = this.buildListRouteContext(provider, {});
-      const availabilityIssue = this.operationalState.getAvailabilityIssue(context);
-      if (availabilityIssue) {
-        continue;
-      }
+    for (let index = 0; index < eligibleProviders.length; index += batchSize) {
+      const batch = eligibleProviders.slice(index, index + batchSize);
+      const settled = await Promise.allSettled(
+        batch.map(async (provider) => {
+          const context = this.buildListRouteContext(provider, {});
+          const availabilityIssue = this.operationalState.getAvailabilityIssue(context);
+          if (availabilityIssue) {
+            return { provider, items: [] as SmsPublicNumber[], skipped: true };
+          }
 
-      try {
-        const items = await provider.listPublicNumbers({
-          providerKey: provider.descriptor.key,
-          limit: this.config.scraping.maxNumbersPerProvider,
-          costTier: "free",
-        });
+          try {
+            const items = await provider.listPublicNumbers({
+              providerKey: provider.descriptor.key,
+              limit: sampleLimit,
+              costTier: "free",
+            });
 
-        this.operationalState.recordRouteSuccess(context, {
-          detail: items.length > 0
-            ? `Facade metadata sampled ${items.length} public numbers.`
-            : "Facade metadata found no public numbers for this provider.",
-          itemCount: items.length,
-          isEmpty: items.length === 0,
-        });
+            this.operationalState.recordRouteSuccess(context, {
+              detail: items.length > 0
+                ? `Facade metadata sampled ${items.length} public numbers.`
+                : "Facade metadata found no public numbers for this provider.",
+              itemCount: items.length,
+              isEmpty: items.length === 0,
+            });
+            return { provider, items, skipped: false };
+          } catch (error) {
+            this.operationalState.recordRouteFailure(context, error);
+            return { provider, items: [] as SmsPublicNumber[], skipped: true };
+          }
+        }),
+      );
 
+      for (const entry of settled) {
+        if (entry.status !== "fulfilled" || entry.value.skipped) {
+          continue;
+        }
+        const { provider, items } = entry.value;
         for (const item of items) {
           const countryName = normalizeText(item.countryName) || provider.descriptor.displayName;
           const countryCode = item.countryCode ?? inferCountryCode(item.countryName, item.phoneNumber);
@@ -4081,8 +4508,6 @@ export class EasySmsService {
             existing.providerKey = provider.descriptor.key;
           }
         }
-      } catch (error) {
-        this.operationalState.recordRouteFailure(context, error);
       }
     }
 
@@ -4509,8 +4934,9 @@ export class EasySmsService {
       routeKey?: string;
       cooldownApplied?: boolean;
     },
+    now: Date = new Date(),
   ): SmsProviderHealthProbeResult {
-    const snapshot = this.listProviderHealth().find((item) => item.providerKey === providerKey);
+    const snapshot = this.listProviderHealth(now).find((item) => item.providerKey === providerKey);
     if (!snapshot) {
       throw new ProviderNotFoundError(providerKey);
     }

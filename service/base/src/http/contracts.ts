@@ -180,8 +180,17 @@ export function parseProviderProbeHistoryQuery(url: URL): SmsProviderProbeHistor
   const until = parseDateTimeQuery(url.searchParams.get("until"), "until");
   validateDateTimeRange(since, until);
   const routeKind = url.searchParams.get("routeKind");
-  if (routeKind !== null && routeKind !== "list-public-numbers" && routeKind !== "read-public-inbox") {
-    throw new ValidationError("routeKind must be list-public-numbers or read-public-inbox.");
+  if (
+    routeKind !== null
+    && routeKind !== "list-public-numbers"
+    && routeKind !== "read-public-inbox"
+    && routeKind !== "activation-catalog"
+    && routeKind !== "create-activation"
+    && routeKind !== "get-activation-status"
+  ) {
+    throw new ValidationError(
+      "routeKind must be list-public-numbers, read-public-inbox, activation-catalog, create-activation, or get-activation-status.",
+    );
   }
   const healthState = url.searchParams.get("healthState");
   if (

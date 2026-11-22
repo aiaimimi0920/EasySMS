@@ -18,19 +18,38 @@ export function startEasySmsMaintenanceLoop(
   service: EasySmsService,
   options: EasySmsMaintenanceLoopOptions,
 ): EasySmsMaintenanceLoop {
-  if (options.activeProbeEnabled) {
+  let inFlightProbe: Promise<SmsProviderHealthProbeResult[]> | undefined;
+
+  const runSerializedProbe = (label: "Initial" | "Periodic" | "Manual"): Promise<SmsProviderHealthProbeResult[]> => {
+    if (inFlightProbe) {
+      return inFlightProbe;
+    }
+
     const startedAt = new Date();
-    void service.probeAllProviders()
+    const task = service.probeAllProviders()
       .then((probes) => {
         service.recordActiveProbeLoopSuccess(
           startedAt,
-          `Initial active probe completed for ${probes.length} providers.`,
+          `${label} active probe completed for ${probes.length} providers.`,
         );
+        return probes;
       })
       .catch((error) => {
-        service.recordActiveProbeLoopFailure(startedAt, error, "Initial active probe failed.");
-        console.error("[EasySMS] maintenance: initial probe failed:", error);
+        service.recordActiveProbeLoopFailure(startedAt, error, `${label} active probe failed.`);
+        throw error;
+      })
+      .finally(() => {
+        inFlightProbe = undefined;
       });
+
+    inFlightProbe = task;
+    return task;
+  };
+
+  if (options.activeProbeEnabled) {
+    void runSerializedProbe("Initial").catch((error) => {
+      console.error("[EasySMS] maintenance: initial probe failed:", error);
+    });
   }
 
   const maintenanceHandle = setInterval(() => {
@@ -38,9 +57,12 @@ export function startEasySmsMaintenanceLoop(
     try {
       const result = service.runMaintenance();
       const refreshedCount = result.refreshed.providers.length + result.refreshed.routes.length;
+      const prunedCount = (result.pruned?.sessions ?? 0) + (result.pruned?.leases ?? 0) + (result.pruned?.issuedNumbers ?? 0);
       service.recordMaintenanceLoopSuccess(
         startedAt,
-        `Maintenance refreshed ${refreshedCount} operational-state entries.`,
+        prunedCount > 0
+          ? `Maintenance refreshed ${refreshedCount} operational-state entries and pruned ${prunedCount} stale records.`
+          : `Maintenance refreshed ${refreshedCount} operational-state entries.`,
       );
     } catch (error) {
       service.recordMaintenanceLoopFailure(startedAt, error, "Periodic maintenance tick failed.");
@@ -50,18 +72,9 @@ export function startEasySmsMaintenanceLoop(
 
   const activeProbeHandle = options.activeProbeEnabled
     ? setInterval(() => {
-        const startedAt = new Date();
-        void service.probeAllProviders()
-          .then((probes) => {
-            service.recordActiveProbeLoopSuccess(
-              startedAt,
-              `Periodic active probe completed for ${probes.length} providers.`,
-            );
-          })
-          .catch((error) => {
-            service.recordActiveProbeLoopFailure(startedAt, error, "Periodic active probe failed.");
-            console.error("[EasySMS] maintenance: periodic probe failed:", error);
-          });
+        void runSerializedProbe("Periodic").catch((error) => {
+          console.error("[EasySMS] maintenance: periodic probe failed:", error);
+        });
       }, options.activeProbeIntervalMs)
     : undefined;
 
@@ -72,9 +85,12 @@ export function startEasySmsMaintenanceLoop(
       try {
         const result = service.runMaintenance();
         const refreshedCount = result.refreshed.providers.length + result.refreshed.routes.length;
+        const prunedCount = (result.pruned?.sessions ?? 0) + (result.pruned?.leases ?? 0) + (result.pruned?.issuedNumbers ?? 0);
         service.recordMaintenanceLoopSuccess(
           startedAt,
-          `Manual maintenance refreshed ${refreshedCount} operational-state entries.`,
+          prunedCount > 0
+            ? `Manual maintenance refreshed ${refreshedCount} operational-state entries and pruned ${prunedCount} stale records.`
+            : `Manual maintenance refreshed ${refreshedCount} operational-state entries.`,
         );
         return result;
       } catch (error) {
@@ -83,19 +99,7 @@ export function startEasySmsMaintenanceLoop(
       }
     },
     probeAll() {
-      const startedAt = new Date();
-      return service.probeAllProviders()
-        .then((probes) => {
-          service.recordActiveProbeLoopSuccess(
-            startedAt,
-            `Manual active probe completed for ${probes.length} providers.`,
-          );
-          return probes;
-        })
-        .catch((error) => {
-          service.recordActiveProbeLoopFailure(startedAt, error, "Manual active probe failed.");
-          throw error;
-        });
+      return runSerializedProbe("Manual");
     },
     stop() {
       clearInterval(maintenanceHandle);
