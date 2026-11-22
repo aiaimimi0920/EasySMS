@@ -2,10 +2,14 @@
 
 `EasySms` 是一个运行在 **Cloudflare Workers + D1 + 私有 R2** 上的统一短信接码与会话编排 HTTP 服务，并通过 `.sba/` 完整接入 **SpringBok**（manifest v3 / deployment v2）实现固定版本发布、加密备份升级、隔离预升级与受控清理。
 
+## 其他 AI / 自动化项目接入指南
+
+- **[EASYSMS_AI_INTEGRATION.md](EASYSMS_AI_INTEGRATION.md)**：面向其他 AI 智能体与下游自动化脚本的完整接入规范（含 `https://sms.yamiyu.com` 鉴权方式、五步标准接码流程、2 分钟无损退款规则、Python/TypeScript 零依赖客户端模板与 SMS-Activate 兼容协议说明）。
+
 ## 核心能力
 
 - **纯服务端对外 HTTP 服务（Cloudflare Workers）**：
-  - 会话优先 API：`/sms/catalog`、`/sms/sessions/plan`、`/sms/sessions/open`、`/sms/sessions/:id/code`、`/sms/sessions/:id/report`
+  - 会话优先 API：`/sms/catalog`、`/sms/sessions/plan`、`/sms/sessions/open`、`/sms/sessions/:id/code`、`/sms/sessions/:id/actions`、`/sms/sessions/report-outcome`
   - 兼容门面：`/stubs/handler_api.php`（兼容 SMS-Activate / HeroSMS 调用协议，支持 `Authorization: Bearer <key>` 或 `?api_key=<key>`）
   - 通道健康治理：`/providers/health`、`/providers/probe`、冷却降级、加权选路与管理员 `disable` / `enable` / `reset`
   - 强制访问控制：对外仅匿名开放 `/healthz`、`/openapi.json` 与 `/.well-known/easysms-release.json`，其余业务与管理端点强制校验 `EASYSMS_API_KEY`
